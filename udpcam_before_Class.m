@@ -1,53 +1,20 @@
-classdef udpcam
+function udpcam(varargin)
     
-    properties (Access=private)
-        win
-        display
-        udp_settings
-        udp_connection
-        camera
-        shutting_down@boolean
-        mainMenu
-        cameraMenu
-    end
+    p=inputParser;
+    p.addParameter('IP','127.0.0.1',@ischar);
+    p.addParameter('LocalPort',4010,@(x)mod(x,1)==0 && x>=1024 && x<=49151);
+    p.addParameter('RemotePort',4011,@isnumeric);
+    p.addParameter('position',[260 500 640 480],@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
+    p.addParameter('center',true,@(x)any(x==[1 0]));
+    p.parse(varargin{:});
     
-    methods (Access=public)
-        function K=udpcam
-            p=inputParser;
-            p.addParameter('IP','127.0.0.1',@ischar);
-            p.addParameter('LocalPort',4010,@(x)mod(x,1)==0 && x>=1024 && x<=49151);
-            p.addParameter('RemotePort',4011,@isnumeric);
-            p.addParameter('position',[260 500 640 480],@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
-            p.addParameter('center',true,@(x)any(x==[1 0]));
-            p.parse(varargin{:});
-            % Set up the UDP connection for receiving commands
-            udp_settings.enable=true;
-            udp_settings.remotehost=p.Results.IP;
-            udp_settings.localport=p.Results.LocalPort;
-            udp_settings.remoteport=p.Results.RemotePort;
-            udp_connection=[];
-            udp_connection=setup_udp_connection(udp_connection,udp_settings);
-    
-        end
-    end
-    methods (Access=private)
-        function connection=setup_udp_connection(connection,settings)
-            if ~isempty(connection)
-                fclose(connection);
-                delete(connection)
-                connection=[];
-            end
-            try
-                connection=udp(settings.remotehost,'RemotePort',settings.remoteport,'LocalPort',settings.localport);
-                connection.DatagramReceivedFcn = @parse_message;
-                fopen(connection);
-                fprintf(connection,'%s online',mfilename);
-            catch me
-                uiwait(errordlg(me.message,mfilename,'modal'));
-            end
-        end
- 
-   
+    % Set up the UDP connection for receiving commands
+    udp_settings.enable=true;
+    udp_settings.remotehost=p.Results.IP;
+    udp_settings.localport=p.Results.LocalPort;
+    udp_settings.remoteport=p.Results.RemotePort;
+    udp_connection=[];
+    udp_connection=setup_udp_connection(udp_connection,udp_settings);
     
     win=figure('Position',p.Results.position,'Visible','off','Units','normalized' ...
        ,'CloseRequestFcn',@closeButton_Callback); %  ,'KeyPressFcn',@(src,evnt)onKey(evnt)
@@ -80,8 +47,9 @@ classdef udpcam
     outputMenu=uimenu('Parent',mainMenu,'Label','Output');
     uimenu('Parent',mainMenu,'Label','Play','Checked','on','Callback',@toggle_play);
     % Build the main menu
-    initMainMenu;
-    % Initialize the disply window
+    buildMainMenu;
+    
+    % Initialize the display window
     display=image(hAx,zeros(1,1,3)); % 1 pixel RGB image to initialize
     display.UIContextMenu=mainMenu;
     %try
@@ -117,14 +85,14 @@ classdef udpcam
       %  clean_up
     end
     
-    function initMainMenu(~,~)
+    function buildMainMenu(~,~)
         % 1 - Get current states to restore after rebuilding the menu
         %   - play state
         playState = get_play;
         if playState
             playCheckmark='on';
         else
-            playCheckmark='off'; % important that default is off otherwise starts video loop. The name "initMainMenu" does not suggest that it would
+            playCheckmark='off'; % important that default is off otherwise starts video loop. The name "buildMainMenu" does not suggest that it would
         end
         populate_camera_settings_menu(cameraMenu)
 
@@ -338,7 +306,21 @@ classdef udpcam
         hObject.Checked='on';
     end
     
-   
+    function connection=setup_udp_connection(connection,settings)
+        if ~isempty(connection)
+            fclose(connection);
+            delete(connection)
+            connection=[];
+        end
+        try
+            connection=udp(settings.remotehost,'RemotePort',settings.remoteport,'LocalPort',settings.localport);
+            connection.DatagramReceivedFcn = @parse_message;
+            fopen(connection);
+            fprintf(connection,'%s online',mfilename);
+        catch me
+            uiwait(errordlg(me.message,mfilename,'modal'));
+        end
+    end
 
     function parse_message(udp_object,udp_struct)
         msg=strtrim(fscanf(udp_object));
