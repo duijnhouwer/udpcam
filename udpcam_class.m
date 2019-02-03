@@ -10,7 +10,6 @@ classdef udpcam_class < handle
         mainMenu
         display
         frame
-        color_space;
     end
     
     methods (Access=public)
@@ -82,8 +81,8 @@ classdef udpcam_class < handle
         function close_button_callback(O,~,~)
             set(O.win, 'pointer', 'watch')
             O.shutting_down=true; % breaks the video loop and makes that uiwait is skipped after coming out of video loop
-            pause(0.2); % give plenty time to finish current cycle of the main_loop
-            O.clean_up;
+            pause(1/3); % give plenty time to finish current cycle of the main_loop
+         %   O.clean_up;
         end
         
         function setup_udp_connection(O)
@@ -109,9 +108,9 @@ classdef udpcam_class < handle
                 uimenu('Parent',O.mainMenu,'Label','UDP Settings...','Callback',@O.edit_udp_connection);
                 uimenu('Parent',O.mainMenu,'Label','Camera');
                 uimenu('Parent',O.mainMenu,'Label','Output');
-                uimenu('Parent',O.mainMenu,'Label','Play','Checked','on','Callback',@toggle_play);
                 uimenu('Parent',O.mainMenu,'Label','Record','Callback',@O.start_recording);
                 O.build_camera_menu;
+                O.build_output_menu;
             else
                 uimenu('Parent',O.mainMenu,'Label','Stop recording','Callback',@O.stop_recording);
             end
@@ -135,6 +134,21 @@ classdef udpcam_class < handle
             end
         end
         
+         function build_output_menu(O,~,~)
+            outMenu=findobj(O.mainMenu.Children,'flat','Label','Output');
+            delete(outMenu.Children);
+            selectMenu=uimenu('Parent',outMenu,'Label','Select');
+            cams=[webcamlist 'None'];
+            for i=1:numel(cams)
+                uimenu('Parent',selectMenu,'Label',cams{i},'Callback',@(src,evt)O.camera_select(src,evt));
+            end
+            uimenu('Parent',selectMenu,'Label','Refresh List','Callback',@O.build_camera_menu);
+            if ~isempty(O.camera) && isvalid(O.camera)
+                O.camera_select(findobj(selectMenu.Children,'flat','Label',O.camera.Name));
+            else
+                set(findobj(selectMenu.Children,'flat','Label','None'),'Checked','on')
+            end
+        end
         
         function camera_select(O,src,~)
             cameraName=src.Text;
@@ -148,7 +162,7 @@ classdef udpcam_class < handle
                 try
                     O.camera=webcam(cameraName);
                 catch me
-                    disp(me.message);
+                    disp(['camera_select - ' me.message]);
                     return
                 end
                 % Add dynamic menus to camera menu (depending on
@@ -187,7 +201,6 @@ classdef udpcam_class < handle
         function color_select(O,src,~)
             set(src.Parent.Children,'Checked','off');
             src.Checked='on';
-            O.color_space=nominal(src.Text);
         end
         
         function grab_frame(O)
@@ -198,24 +211,25 @@ classdef udpcam_class < handle
                     % camera.snapshot will throw a timeout error if a settings
                     % dialog has been open. Catch that error here and set f to
                     % some value
-                    disp(me.message)
+                    disp(['grab_frame - ' me.message])
                     O.frame=repmat(realsqrt(rand(525,700)),1,1,3);
                 end
             else
                 O.frame=repmat(realsqrt(rand(525,700)),1,1,3);
             end
-            if isempty(O.color_space) || O.color_space=='RGB'
+            color_space = nominal(O.get_color_space(O.mainMenu));
+            if color_space=='RGB'
                 O.frame=O.frame;
-            elseif O.color_space=='Grayscale'
+            elseif color_space=='Grayscale'
                 O.frame=repmat(rgb2gray(O.frame),1,1,3);
-            elseif O.color_space=='R'
+            elseif color_space=='R'
                 O.frame(:,:,[2 3])=0;
-            elseif O.color_space=='G'
+            elseif color_space=='G'
                 O.frame(:,:,[1 3])=0;
-            elseif O.color_space=='B'
+            elseif color_space=='B'
                 O.frame(:,:,[1 2])=0;
             else
-                error('Unknown colorspace: %s',O.color_space)
+                error('Unknown colorspace: %s',color_space)
             end
         end
         
@@ -229,8 +243,7 @@ classdef udpcam_class < handle
                 O.display.CData=O.frame;
             end
         end
-        
-        
+
         function start_recording(O,~,~)
             O.recording=true;
             O.buildMainMenu;
@@ -240,7 +253,7 @@ classdef udpcam_class < handle
             O.recording=false;
             O.buildMainMenu;
         end
-        
+  
         function clean_up(O)
             % Clean up
             if ~isempty(O.udp_connection) && isvalid(O.udp_connection)
@@ -250,11 +263,23 @@ classdef udpcam_class < handle
             delete(O.camera);
             delete(O.win);
         end
-        
-        
-        
     end
+    
     methods (Static)
+        function str = get_color_space(mainMenu)
+            try
+                colmenu=findobj(mainMenu.Children,'Label','Color Space');
+                if isempty(colmenu)
+                    str='RGB';
+                else
+                    check_item=findobj(colmenu.Children,'flat','Checked','on');
+                    str=check_item.Text; % e.g. 'Grayscale'
+                end
+            catch me
+                disp(['get_color_space - ' me.message]);
+                str='RGB';
+            end
+        end
     end
 end
 
