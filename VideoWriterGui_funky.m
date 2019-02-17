@@ -1,109 +1,159 @@
- function out=VideoWriterGui_funky(filename,profile,varargin)
+ function out=VideoWriterGui_funky(varargin)
     % Load the information about available profiles
    
      import('audiovideo.internal.writer.profile.ProfileFactory');
      prof_info=ProfileFactory.getKnownProfiles;
       
-    if ~exist('filename','var') || isempty(filename)
-        filename=fullfile(pwd,datestr(now,'YYYYMMDD_hhmmss'));
-    elseif ~ischar(filename)
-        error('arg #1 (filename) must be empty or a string');
-    end
-    if ~exist('profile','var') || isempty(profile)
-        profile=prof_info(1).Name;
-    elseif ~ischar(profile) || ~any(strcmpi(x,{prof_info(:).Name}))
-        error('arg #2 (profile) must be empty or one of the following strings:\n %s',sprintf('\t''%s''\n',prof_info(:).Name));
-    end
+     screensize=get(groot,'Screensize');
+     defpos=[screensize(3)/2 screensize(4)/2 screensize(3)/6 screensize(4)/8];
+     
     p=inputParser;
-    p.addParameter('position',[260 500 400 120],@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
+    p.addParameter('filename',fullfile(pwd,datestr(now,'YYYYMMDD_hhmmss')),@char);
+    p.addParameter('matlab_presets',true,@(x)any(x==[0 1]));
+    p.addParameter('presets',[],@(x)isempty(x) || isstruct(x));
+    p.addParameter('default_preset',1,@(x)isnumeric(x) && x>0 && round(x)==x);
+    p.addParameter('position',defpos,@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
+    p.addParameter('title',mfilename,@ischar);
     p.addParameter('center',true,@(x)any(x==[1 0]));
     p.parse(varargin{:});
     
-    % Create the main window
-    fig_obj(figure);
-    clf(fig_obj);
-    set(fig_obj,'Color',[0.94 0.94 0.94]);
-    %fig_obj.Position=p.Results.position;
-    %  fig_obj.Visible='off';
-    set(fig_obj,'Units','Pixels');
-    set(fig_obj,'CloseRequestFcn',@close_button_callback);
-    set(fig_obj,'ResizeFcn',[]);
-    set(fig_obj,'NumberTitle','Off');
-    set(fig_obj,'MenuBar','none');
-    set(fig_obj,'ToolBar','none');
-    set(fig_obj,'Name',mfilename);
+    % Clear the persisten value in the handle function in case a previous
+    % run terminated before clearing was reached
+    handles('clear');
+    % Set the deault return value
+    handles('set','return_value',[]);
     
-    % Add the static GUI elements
-    build_gui(filename,profile);
+    % make the list of available profiles to select
+    if ~isempty(p.Results.presets)
+        for i=1:numel(p.Results.presets)
+            handles('append','profiles',p.Results.presets.profile_name);
+            handles('append','profile_descriptions',p.Results.presets.profile_desc);
+            handles('append','extensions',p.Results.presets.file_extension);
+            handles('append','videowriters',p.Results.presets.VideoWriter);
+        end
+    end
+    if p.Results.matlab_presets
+        for i=1:numel(prof_info)
+            handles('append','profiles',prof_info(i).Name);
+            handles('append','profile_descriptions',prof_info(i).Description);
+            handles('append','extensions',prof_info(i).FileExtensions{1});
+            handles('append','videowriters',VideoWriter('tmp',prof_info(i).Name));
+        end
+    end
+    if ~isfield(handles,'profiles')
+        error('No presets. Provide an array of preset-structures or use matlab''s presets (''matlab_presets'',true)');
+    end
+    
+    % Create the main window
+    handles('set','fig',figure);
+    fig=handles('get','fig');
+    clf(fig);
+    set(fig,'Color',[0.94 0.94 0.94]);
+    fig.Position=p.Results.position;
+    set(fig,'Visible','off');
+    set(fig,'Units','Pixels');
+    set(fig,'CloseRequestFcn',@close_button_callback);
+    set(fig,'ResizeFcn',[]);
+    set(fig,'NumberTitle','Off');
+    set(fig,'MenuBar','none');
+    set(fig,'ToolBar','none');
+    set(fig,'Name',p.Results.title);
+    
+    % Add the UIControls
+    build_gui(p.Results.filename,p.Results.default_preset);
     % Put at center of screen if requested
     if p.Results.center
-        movegui(fig_obj,'center')
+        movegui(fig,'center')
     end
     % Make the window visible.
-    set(fig_obj,'Visible','on');
+    set(fig,'Visible','on');
     drawnow;
-    uiwait(fig_obj);
-    out=vid_obj;
- end
-
- function out=fig_obj(in)
-     persistent p
-     if nargin==1
-         delete(p);
-         p=in;
-     end
-     out=p;
+    uiwait(fig);
+    out=handles('get','return_value');
+    handles('clear');
  end
  
- function out=vid_obj(in)
-     persistent p
-     if nargin==1
-         delete(p)
-         p=in;
+ function out=handles(method,name,value_or_idx,idx)
+     % Way to store global-like variables that are global only to this funtion, not the entire workspace 
+     persistent p;
+     if isempty(p)
+         p=struct;
      end
-     out=p;
+     if nargin==0
+         out=p;
+         return
+     elseif strcmp(method,'get')
+         % value_or_idx is an index, idx is verboten
+         if nargin==4
+             error('can''t specify idx when method is get')
+         end
+         if exist('value_or_idx','var')
+             out=p.(name){value_or_idx};
+         else
+             out=p.(name);
+         end
+         if iscell(out) && numel(out)==1
+             out=out{1};
+         end
+     elseif strcmp(method,'set')
+         if exist('idx','var')
+             p.(name){idx}=value_or_idx;
+         else
+             p.(name)={};
+             p.(name){1}=value_or_idx;
+         end
+     elseif strcmp(method,'append') % special case of set
+         if nargin==4
+             error('can''t specify idx when method is append')
+         end
+         if ~isfield(p,name)
+             p.(name){1}=value_or_idx;
+         else
+             p.(name){end+1}=value_or_idx;
+         end
+     elseif strcmp(method,'clear')
+         p=[]; % to do: check that all used memory is actually freed (store a huge variable to test)
+     else
+         error('unknown method')
+     end
  end
-         
-
+ 
 function build_gui(filename,profile)
-     import('audiovideo.internal.writer.profile.ProfileFactory');
-      prof_info=ProfileFactory.getKnownProfiles;
-      
-    persistent oldfilename oldprofile
-    if strcmpi(oldfilename,filename) && strcmpi(oldprofile,profile)
-        return
+    persistent old_n_rows
+   % persistent oldfilename oldprofile
+   % if strcmpi(oldfilename,filename) && strcmpi(oldprofile,profile)
+   %     return
+   % end
+    if isnumeric(profile)
+        if profile<1 || profile>numel(handles('get','profiles'))
+            warning('requested default profile is out of range, using top of list');
+            profile=1;
+        end
+        profile=handles('get','profiles',profile);
     end
-    oldfilename=filename;
-    oldprofile=profile;
-    
-    % all dimension in pixels
-    leftcolwid=140;
-    rightcolwid=140;
-    hei=20;
-    vspace=6;
-    hspace=10;
-    rowhei=hei+vspace;
-    bottom=10;
-    left=10;
+   % end
+   % oldfilename=filename;
+   % oldprofile=profile;
+
     
     % Clear all uicontrols
-    delete(get(fig_obj,'Children'))
-    clf(fig_obj);
-    
-    
+    fig=handles('get','fig');
+    delete(get(fig,'Children'));
+    clf(fig);
+
     % Add a file search button
-    filebut=uicontrol('Parent',fig_obj,'Style','pushbutton','String','File');
+    filebut=uicontrol('Parent',fig,'Style','pushbutton','String','Filename');
     filebut.Tag='filebut';
     filebut.Callback=@filebut_callback;
     if exist('filename','var')
         filebut.TooltipString=filename;
     end
     % Add profile pop up menu
-    profpop=uicontrol('Parent',fig_obj,'Style','popup');
-    profpop.String={prof_info(:).Name};
+    profpop=uicontrol('Parent',fig,'Style','popup');
+    profpop.String=handles('get','profiles');
     profpop.Tag='profpop';
     if exist('profile','var')
-        profpop.Value=find(strcmpi(profile,{prof_info(:).Name}));
+        profpop.Value=find(strcmpi(profile,profpop.String));
     end
     profpop.Callback=@profpop_callback;
     profpop.ButtonDownFcn=@profpop_callback;
@@ -112,88 +162,88 @@ function build_gui(filename,profile)
    
     % Make the video object, which, depending on the profile used
     % will have a number of settable properties
-    make_vid_obj;
-    propnames=fieldnames(settable_properties(vid_obj));
-    propvals=struct2cell(settable_properties(vid_obj));
+    vw=handles('get','videowriters',profpop.Value);
+    propnames=fieldnames(settable_properties(vw));
+    propvals=struct2cell(settable_properties(vw));
     % add uicontrols for the settable properties
     
     for i=1:numel(propnames)
         % The property name field
-        uicontrol('Parent',fig_obj,'Style','text','String',propnames{i});
+        uicontrol('Parent',fig,'Style','text','String',propnames{i});
         % The corresponding value
         if ~isempty(propvals{i})
             valstr=num2str(propvals{i}); % num2str('asd') > 'asd'
         else
             valstr='[]';
         end
-        uicontrol('Parent',fig_obj,'Style','edit','String',valstr,'Tag',['value_' propnames{i}]);
+        uicontrol('Parent',fig,'Style','edit','String',valstr,'Tag',['value_' propnames{i}]);
     end
     
     % Add Cancel button
-    cancelbut=uicontrol('Parent',fig_obj,'Style','pushbutton','String','Cancel');
+    cancelbut=uicontrol('Parent',fig,'Style','pushbutton','String','Cancel');
     cancelbut.Tag='cancelbut';
     cancelbut.Callback=@cancelbut_callback;
     % Add OK button
-    okbut=uicontrol('Parent',fig_obj,'Style','pushbutton','String','OK');
+    okbut=uicontrol('Parent',fig,'Style','pushbutton','String','OK');
     okbut.Tag='okbut';
     okbut.Callback=@okbut_callback;
     
     % set the window width and height to accomodate all uicontrols
-    all_ui=findobj(fig_obj,'Type','UIControl');
-    fig_handle=fig_obj;
-    fig_handle.Position(3)=3*hspace+leftcolwid+rightcolwid;
-    oldhei=fig_handle.Position(4);
-    fig_handle.Position(4)=ceil(numel(all_ui)/2)*rowhei+2*vspace;
-    fig_handle.Position(2)=fig_handle.Position(2)+oldhei-fig_handle.Position(4);
+    all_ui=findobj(fig,'Type','UIControl');
+    now_n_rows=numel(all_ui)/2;
+    set(all_ui,'Units','Normalized');
+    if isempty(old_n_rows)
+        old_n_rows=now_n_rows; % first time we get here
+    end
+    if now_n_rows~=old_n_rows
+        set(fig,'Units','Pixels');
+        old_fig_hei = fig.InnerPosition(4);
+        fig.InnerPosition(4)=round(old_fig_hei/old_n_rows*now_n_rows);
+        fig.Position(2)=fig.InnerPosition(2)+old_fig_hei-fig.InnerPosition(4);
+        set(fig,'Units','Normalized');
+    end
+    old_n_rows=now_n_rows;
     % Set the position and size of all uicontrols
     for i=1:2:numel(all_ui)
-        all_ui(i).Position=[left+leftcolwid+hspace bottom+floor(i/2)*rowhei rightcolwid hei];
-        all_ui(i+1).Position=[left bottom+floor(i/2)*rowhei leftcolwid hei];
-    end
-    % Cosmetically adjust button and popup menu heights
-    for i=1:numel(all_ui)
-        if strcmpi(all_ui(i).Style,'pushbutton')
-            all_ui(i).Position(2)=all_ui(i).Position(2)-hei*0.2;
-            all_ui(i).Position(4)=round(hei*1.25);
-        elseif strcmpi(all_ui(i).Style,'popupmenu')
-            all_ui(i).Position(2)=all_ui(i).Position(2)+hei*0.2;
-            all_ui(i).Position(4)=round(hei/1.2);
-        end
+        hei=1/now_n_rows*0.8;
+        ypos=(i-1)/2/now_n_rows + 1/now_n_rows*0.1;
+        all_ui(i).Position=[0.5125 ypos 0.475 hei];
+        all_ui(i+1).Position=[0.025 ypos 0.475 hei];
     end
     drawnow;
 end
 function okbut_callback(~,~)
-    if make_vid_obj
-        delete(fig_obj);
+    make_return_value;
+    if ~isempty(handles('get','return_value'))
+        delete(handles('get','fig'));
     end
 end
-function ok=make_vid_obj
-    ok=true;
-    filebut=findobj(fig_obj,'Tag','filebut');
-    profpop=findobj(fig_obj,'Tag','profpop');
+function make_return_value
+    fig=handles('get','fig');
+    filebut=findobj(fig,'Tag','filebut');
+    profpop=findobj(fig,'Tag','profpop');
     try 
         VW=VideoWriter(filebut.TooltipString,profpop.String{profpop.Value});
-        fig_obj_children=get(fig_obj,'Children');
-        paramcontrols=fig_obj_children(startsWith({fig_obj_children.Tag},'value_'));
-        for i=1:numel(paramcontrols)
-            paramname=paramcontrols(i).Tag(numel('value_1'):end);
-            newval=eval(strtrim(paramcontrols(i).String));
+        fig_obj_children=get(fig,'Children');
+        paramfields=fig_obj_children(startsWith({fig_obj_children.Tag},'value_'));
+        for i=1:numel(paramfields)
+            paramname=paramfields(i).Tag(numel('value_1'):end);
+            newval=eval(strtrim(paramfields(i).String));
             if ~all(VW.(paramname)==newval)
                 % only setting when changed prevents "compression
                 % ratio" cant be set when lossless compression is
                 % true for Archival profile
-                VW.(paramname)=eval(paramcontrols(i).String);
+                VW.(paramname)=eval(paramfields(i).String);
             end
         end
-        vid_obj(VW);
+        handles('set','return_value',VW);
     catch me
         uiwait(errordlg(me.message,mfilename,'modal'));
-        ok=false;
+        handles('get','return_value',[]);
     end
 end
 function cancelbut_callback(~,~)
-    vid_obj([]);
-    fig_obj([]);
+    delete(handles('get','fig'));
 end
 function close_button_callback(~,~)
     cancelbut_callback;
@@ -201,8 +251,8 @@ end
 
 function profpop_callback(~,~)
     persistent previous_profile
-    profpop=findobj(fig_obj,'Tag','profpop');
-    filebut=findobj(fig_obj,'Tag','filebut');
+    profpop=findobj(handles('get','fig'),'Tag','profpop');
+    filebut=findobj(handles('get','fig'),'Tag','filebut');
     force_proper_file_extension_and_description
     if ~strcmpi(previous_profile,profpop.String{profpop.Value})
         previous_profile=profpop.String{profpop.Value};
@@ -210,45 +260,33 @@ function profpop_callback(~,~)
     end
 end
 function filebut_callback(~,~)
-    global prof_info
-    filebut=findobj(fig_obj,'Tag','filebut');
-    % Make the filters (movie extensions)
-    ext=[prof_info(:).FileExtensions];
-    unique_ext=unique(ext);
+    filebut=findobj(handles('get','fig'),'Tag','filebut');
+    % Make the filters (filename extensions)
+    unique_ext=unique(handles('get','extensions'));
     filters{1,1}=strtrim(sprintf('*%s; ',unique_ext{:}));
     filters{1,2}=['MATLAB movie formats (' strtrim(sprintf('*%s, ',unique_ext{:})) ')'];
     filters{1,2}(end-1)=[]; % remove final comma
     filters{2,1}='*.*';
     filters{2,2}='All Files (*.*)';
-    % Make the default name (with extension matching the selected profile)
-    %  [fld,nme]=fileparts(obj.TooltipString);
-    %  fname=fullfile(fld,nme);
-    %  if get(findobj(obj.Parent,'Tag','profpop'),'Value')>1
-    %      fname=[fname ext{get(findobj(obj.Parent,'Tag','profpop'),'Value')}];
-    %  end
     [file,folder]=uiputfile(filters,'Save movie as',filebut.TooltipString);
     if isnumeric(file)
-        % user pressed cancel
-        return;
+        return; % user pressed cancel
     end
     filebut.TooltipString=fullfile(folder,file);
 end
 
 function force_proper_file_extension_and_description
-      % Set the extension of the filename to confirm the profile and also set
+    % Set the extension of the filename to confirm the profile and also set
     % the tooltipstring of the popup to show a description of the profile
-    import('audiovideo.internal.writer.profile.ProfileFactory');
-    prof_info=ProfileFactory.getKnownProfiles;
-      profpop=findobj(fig_obj,'Tag','profpop');
-    profpop.TooltipString=prof_info(profpop.Value).Description;
+    profpop=findobj(handles('get','fig'),'Tag','profpop');
+    profpop.TooltipString=handles('get','profile_descriptions',profpop.Value);
     if profpop.TooltipString(end)=='.'
         profpop.TooltipString(end)=[];
     end
     % change the extension of the filename to the selected profile
-    filebut=findobj(fig_obj,'Tag','filebut');
+    filebut=findobj(handles('get','fig'),'Tag','filebut');
     [fld,nme]=fileparts(filebut.TooltipString);
-    ext=[prof_info(:).FileExtensions];
     fname=fullfile(fld,nme);
-    filebut.TooltipString=[fname ext{profpop.Value}];
+    filebut.TooltipString=[fname handles('get','extensions',profpop.Value)];
 end
 
