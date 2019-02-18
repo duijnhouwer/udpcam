@@ -1,4 +1,4 @@
- function out=VideoWriterGui_funky(varargin)
+ function [vid,prof]=VideoWriterGui(varargin)
     % Load the information about available profiles
    
      import('audiovideo.internal.writer.profile.ProfileFactory');
@@ -8,12 +8,12 @@
      defpos=[screensize(3)/2 screensize(4)/2 screensize(3)/6 screensize(4)/8];
      
     p=inputParser;
-    p.addParameter('filename',fullfile(pwd,datestr(now,'YYYYMMDD_hhmmss')),@char);
+    p.addParameter('filename',fullfile(pwd,datestr(now,'YYYYMMDD_hhmmss')),@ischar);
     p.addParameter('matlab_presets',true,@(x)any(x==[0 1]));
     p.addParameter('presets',[],@(x)isempty(x) || isstruct(x));
     p.addParameter('default_preset',1,@(x)isnumeric(x) && x>0 && round(x)==x);
     p.addParameter('position',defpos,@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
-    p.addParameter('title',mfilename,@ischar);
+    p.addParameter('title','Choose Video Settings',@ischar);
     p.addParameter('center',true,@(x)any(x==[1 0]));
     p.parse(varargin{:});
     
@@ -21,15 +21,16 @@
     % run terminated before clearing was reached
     handles('clear');
     % Set the deault return value
-    handles('set','return_value',[]);
+    handles('set','return_video',[]);
+    handles('set','return_profile',[]);
     
     % make the list of available profiles to select
     if ~isempty(p.Results.presets)
         for i=1:numel(p.Results.presets)
-            handles('append','profiles',p.Results.presets.profile_name);
-            handles('append','profile_descriptions',p.Results.presets.profile_desc);
-            handles('append','extensions',p.Results.presets.file_extension);
-            handles('append','videowriters',p.Results.presets.VideoWriter);
+            handles('append','profiles',p.Results.presets(i).profile_name);
+            handles('append','profile_descriptions',p.Results.presets(i).profile_desc);
+            handles('append','extensions',['.' p.Results.presets(i).VideoWriter.FileFormat]);
+            handles('append','videowriters',p.Results.presets(i).VideoWriter);
         end
     end
     if p.Results.matlab_presets
@@ -69,7 +70,10 @@
     set(fig,'Visible','on');
     drawnow;
     uiwait(fig);
-    out=handles('get','return_value');
+    vid=handles('get','return_video');
+    prof=handles('get','return_profile');
+   % profpop=findobj(fig,'Tag','profpop');
+   % prof=profpop.String{profpop.Value};
     handles('clear');
  end
  
@@ -120,10 +124,6 @@
  
 function build_gui(filename,profile)
     persistent old_n_rows
-   % persistent oldfilename oldprofile
-   % if strcmpi(oldfilename,filename) && strcmpi(oldprofile,profile)
-   %     return
-   % end
     if isnumeric(profile)
         if profile<1 || profile>numel(handles('get','profiles'))
             warning('requested default profile is out of range, using top of list');
@@ -131,10 +131,6 @@ function build_gui(filename,profile)
         end
         profile=handles('get','profiles',profile);
     end
-   % end
-   % oldfilename=filename;
-   % oldprofile=profile;
-
     
     % Clear all uicontrols
     fig=handles('get','fig');
@@ -214,7 +210,7 @@ function build_gui(filename,profile)
 end
 function okbut_callback(~,~)
     make_return_value;
-    if ~isempty(handles('get','return_value'))
+    if ~isempty(handles('get','return_video'))
         delete(handles('get','fig'));
     end
 end
@@ -223,7 +219,11 @@ function make_return_value
     filebut=findobj(fig,'Tag','filebut');
     profpop=findobj(fig,'Tag','profpop');
     try 
-        VW=VideoWriter(filebut.TooltipString,profpop.String{profpop.Value});
+        profname=profpop.String{profpop.Value};
+        if any(profname=='(')
+            profname=profname(find(profname=='(')+1:find(profname==')')-1);
+        end
+        VW=VideoWriter(filebut.TooltipString,profname);
         fig_obj_children=get(fig,'Children');
         paramfields=fig_obj_children(startsWith({fig_obj_children.Tag},'value_'));
         for i=1:numel(paramfields)
@@ -233,13 +233,29 @@ function make_return_value
                 % only setting when changed prevents "compression
                 % ratio" cant be set when lossless compression is
                 % true for Archival profile
-                VW.(paramname)=eval(paramfields(i).String);
+                try
+                    VW.(paramname)=eval(paramfields(i).String);
+                catch innerme
+                    if strcmp(innerme.identifier,'MATLAB:set:invalidType')
+                        % For example LosslessCompression requires true or
+                        % false, 0 or 1 are not accepted! fix that now ...
+                        if any(eval(paramfields(i).String)==[0 1])
+                            VW.(paramname)=eval(paramfields(i).String)~=0;
+                        else
+                            rethrow(innerme);
+                        end
+                    else
+                        rethrow(innerme)
+                    end
+                end
             end
         end
-        handles('set','return_value',VW);
+        handles('set','return_video',VW);
+        handles('set','return_profile',profname);
     catch me
         uiwait(errordlg(me.message,mfilename,'modal'));
-        handles('get','return_value',[]);
+        handles('set','return_video',[]);
+        handles('set','return_profile',[]);
     end
 end
 function cancelbut_callback(~,~)

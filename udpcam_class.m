@@ -14,10 +14,10 @@ classdef udpcam_class < handle
         frame
         rec_start_tic
         frame_timestamp_s
-        intermediate % stores filename of intermediate video file streamed to disk
-        final % stores filename of final, resampled video file
-        delete_intermediate=true;
-        video_settings
+        %intermediate % stores filename of intermediate video file streamed to disk
+        %final % stores filename of final, resampled video file
+        %delete_intermediate=true;
+        video_profile
         overlay
         win_resize_tic % timer since last window resize
     end
@@ -47,10 +47,8 @@ classdef udpcam_class < handle
             O.setup_udp_connection;
             
             % Set the video defaults
-            O.intermediate.filename=fullfile(pwd,sprintf('%s_intermed.mj2',mfilename)); % struct for UDP parsing
-            O.final.filename=fullfile(pwd,sprintf('%s_final.mj2',mfilename)); % struct for UDP parsing
-            O.video_settings.quality=100;
-            O.video_settings.duration_s=3600;
+            O.video_profile='Archival';
+            O.vid_obj=VideoWriter(fullfile(pwd,'vid.mj2'),O.video_profile);
             
             % Setup the window
             O.fig_obj=figure;
@@ -141,7 +139,7 @@ classdef udpcam_class < handle
                 O.clean_up;
             end
         end
-    
+        
         function parse_message(O,~,~)
             msg=strtrim(fscanf(O.udp_obj));
             commands=cellfun(@strtrim,regexp(msg,'>','split'),'UniformOutput',false); % 'Color Space > RGB' --> {'Color Space'}    {'RGB'}
@@ -182,10 +180,9 @@ classdef udpcam_class < handle
             if ~O.rec_frames>0
                 uimenu('Parent',O.mainMenu,'Label','UDP Settings...','Callback',@O.edit_udp_connection);
                 uimenu('Parent',O.mainMenu,'Label','Camera');
-                uimenu('Parent',O.mainMenu,'Label','Output');
-                uimenu('Parent',O.mainMenu,'Label','Fit Figure','Callback',@O.resize_figure_to_content);
+                uimenu('Parent',O.mainMenu,'Label','Video Settings...','Callback',@O.edit_output_settings);
+                uimenu('Parent',O.mainMenu,'Label','Record','Separator','on','Callback',@O.start_recording);
                 O.build_camera_menu;
-                O.build_output_menu;
             else
                 uimenu('Parent',O.mainMenu,'Label','Stop Recording','Callback',@O.stop_recording);
             end
@@ -209,14 +206,13 @@ classdef udpcam_class < handle
             end
         end
         
-        function build_output_menu(O,~,~)
-            outMenu=findobj(O.mainMenu.Children,'flat','Label','Output');
-            delete(outMenu.Children);
-            uimenu('Parent',outMenu,'Label','Intermediate File...','Callback',{@O.edit_output_filename,'intermediate'});
-            uimenu('Parent',outMenu,'Label','Final File...','Callback',{@O.edit_output_filename,'final'});
-            uimenu('Parent',outMenu,'Label','Settings...','Callback',@O.edit_output_settings);
-            uimenu('Parent',outMenu,'Label','Record','Callback',@O.start_recording);
-        end
+        %function build_output_menu(O,~,~)
+        %    outMenu=findobj(O.mainMenu.Children,'flat','Label','Output');
+        %    delete(outMenu.Children);
+        %    uimenu('Parent',outMenu,'Label','Intermediate File...','Callback',{@O.edit_output_filename,'intermediate'});
+        %    uimenu('Parent',outMenu,'Label','Final File...','Callback',{@O.edit_output_filename,'final'});
+        %    uimenu('Parent',outMenu,'Label','Settings...','Callback',@O.edit_output_settings);
+        %end
         
         function select_camera(O,src,~)
             cameraName=src.Text;
@@ -288,7 +284,7 @@ classdef udpcam_class < handle
                         end
                     end
                 case 'UDP'
-                    tmpset=parse_assignment_string(tmpset,action);
+                    tmpset=O.parse_assignment_string(tmpset,action);
                     error(check_for_errors(tmpset)); % throws no error if argument is empty
             end
             % Don't check for change, make a new connection regardless
@@ -322,7 +318,7 @@ classdef udpcam_class < handle
                     O.video_settings.filename=fullfile(folder,name);
                 case 'UDP'
                     tmpset=O.(whichstr);
-                    tmpset=parse_assignment_string(tmpset,action);
+                    tmpset=O.parse_assignment_string(tmpset,action);
                     errstr=check_for_errors(tmpset); % throws no error if argument is empty
                     if isempty(errstr)
                         O.(whichstr)=tmpset;
@@ -344,44 +340,47 @@ classdef udpcam_class < handle
                 end
             end
         end
-          
+        
         function edit_output_settings(O,~,action)
-            tmpset=O.video_settings;
+            %  tmpset=O.video_settings;
             switch O.kindof(action)
                 case 'GUI'
-                    while true
-                        [tmpset,pressedOk]=guisetstruct(tmpset,'Output Settings',8);
-                        if ~pressedOk
-                            return; % user pressed cancel, no changes will be made
-                        end
-                        errstr=check_for_errors(tmpset);
-                        if ~isempty(errstr)
-                            uiwait(errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
-                        else
-                            break; % the while loop
-                        end
+                    tmpset.profile_name=['Current (' O.video_profile ')'];
+                    tmpset.profile_desc=['Current video settings based on the ' O.video_profile ' profile'];
+                    tmpset.VideoWriter=O.vid_obj;
+                    [vidtmp,proftmp]=VideoWriterGui('filename',fullfile(O.vid_obj.Path,O.vid_obj.Filename),'preset',tmpset);
+                    if ~isempty(vidtmp)
+                        O.vid_obj=vidtmp;
+                        O.video_profile=proftmp;
+                        return;
                     end
                 case 'UDP'
-                    tmpset=parse_assignment_string(tmpset,action);
-                    errstr=check_for_errors(tmpset);
-                    if ~isempty(errstr)
-                        fprintf(O.udp_obj,errstr);
+                    tmpset=settable_properties(O.vid_obj);
+                    tmpset.filename=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
+                    tmpset.profile=O.video_profile;
+                    tmpset=O.parse_assignment_string(tmpset,action);
+                    try
+                        vidtmp=VideoWriter(tmpset.filename,tmpset.profile);
+                        props=fieldnames(tmpset);
+                        for i=1:numel(props)
+                            if ~any(strcmpi(props{i},{'filename','profile'}))
+                                if ~isempty([vidtmp.(props{i}) tmpset.(props{i})]) % To prevent error of, for example, setting MJ2BitDepth to [] (even though default of MJ2BitDepth is []!!!!! Mathworks...)
+                                    if vidtmp.(props{i})~=tmpset.(props{i}) % don't change if same, prevents for example the error 'Setting the CompressionRatio when LosslessCompression is enable is not allowed.'
+                                        vidtmp.(props{i})=tmpset.(props{i});
+                                    end
+                                end
+                            end
+                        end
+                    catch me
+                        fprintf(O.udp_obj,me.message);
+                        return;
                     end
-            end
-            % Don't check for change, make a new connection regardless
-            O.video_settings=tmpset;
-            %
-            function errstr=check_for_errors(set)
-                errstr='';
-                if ~isnumeric(set.quality) || set.quality<0 || set.quality>100
-                    errstr=sprintf('%s\n%s',errstr,'quality must be a number between 0 and 100');
-                end
-                if ~isnumeric(set.duration_s) || set.duration_s<0
-                    errstr=sprintf('%s\n%s',errstr,'duration_s must be a positive number (0 means indefinite)');
-                end
+                    delete(O.vid_obj);
+                    O.vid_obj=vidtmp;
+                    O.video_profile=tmpset.profile;
             end
         end
-         
+        
         function grab_frame(O)
             if ~isempty(O.cam_obj) && isvalid(O.cam_obj) && ~O.exit_flag
                 try
@@ -419,7 +418,7 @@ classdef udpcam_class < handle
                 % Adjust aspect ratio of axs_obj so frame isn't stretched
                 O.maintain_aspect_ratio;
                 % Re-attach the menu to the display
-                O.display.UIContextMenu=O.mainMenu; 
+                O.display.UIContextMenu=O.mainMenu;
                 O.display.Parent.Visible='off';
                 % Restore the overlay
                 O.build_overlay(overlay_props);
@@ -481,10 +480,10 @@ classdef udpcam_class < handle
         
         function start_recording(O,~,~)
             try
-                O.vid_obj=VideoWriter(O.intermediate.filename,'Archival');
+                %      O.vid_obj=VideoWriter(O.intermediate.filename,'Archival');
                 open(O.vid_obj);
             catch me
-                msg={sprintf('Could not open %s for saving video',O.intermediate.filename)};
+                msg={sprintf('Could not open %s for saving video',O.vid_obj.Filename)};
                 msg{end+1}=me.message;
                 uiwait(errordlg(msg,mfilename,'modal'));
                 return
@@ -502,9 +501,9 @@ classdef udpcam_class < handle
             close(O.vid_obj);
             if was_rec
                 O.show_frame; % to remove red border
-                overlay_props=settable_properties(O.overlay);
-                resample_video(O.intermediate.filename,O.frame_timestamp_s,O.final.filename,'MPEG-4','FrameRate',100,'progfun',@O.show_resample_prog);%O.video_settings
-                O.build_overlay(overlay_props); % restore overlay to values before resampling changed them
+               % overlay_props=settable_properties(O.overlay);
+               % resample_video(O.intermediate.filename,O.frame_timestamp_s,O.final.filename,'MPEG-4','FrameRate',100,'progfun',@O.show_resample_prog);%O.video_settings
+               % O.build_overlay(overlay_props); % restore overlay to values before resampling changed them
             end
             O.build_main_menu;
         end
@@ -606,7 +605,7 @@ classdef udpcam_class < handle
         end
     end
 end
-    
-    
-    
-    
+
+
+
+
