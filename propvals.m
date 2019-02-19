@@ -27,15 +27,13 @@ function s = propvals(obj,opt)
     narginchk(1,2)
     props=properties(obj);
     
-    if ~exist('opt','var') || isempty(opt)
+    if nargin==1
         opt='all';
-    end
-    
-    if ~any(strcmpi(opt,{'set','all'}))
+    elseif ~any(strcmpi(opt,{'set','all'}))
         error('Argument #2 must be ''all'', ''set'', or omitted.')
     end
     
-    if nargin>1 && strcmpi(opt,'set')
+    if strcmpi(opt,'set')
         canset=true(numel(props),1);
         for i=1:numel(props)
             tmp=findprop(obj,props{i});
