@@ -380,7 +380,7 @@ classdef udpcam_class < handle
                         return;
                     end
                 case 'UDP'
-                    tmpset=settable_properties(O.vid_obj);
+                    tmpset=propvals(O.vid_obj,'set');
                     tmpset.filename=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
                     tmpset.profile=O.video_profile;
                     tmpset=O.parse_assignment_string(tmpset,action);
@@ -445,7 +445,7 @@ classdef udpcam_class < handle
         
         function show_frame(O)
             if ~all(size(O.display.CData)==size(O.frame))
-                overlay_props=settable_properties(O.overlay);
+                overlay_props=propvals(O.overlay,'set');
                 % axs_obj hold must be off, consequently the next command
                 % will delete all it's children including overlay
                 O.display=image(O.axs_obj,[0 1],[0 1],O.frame); % O.axs_obj
@@ -549,12 +549,12 @@ classdef udpcam_class < handle
                     warning('Could not save timestamp file ''%s''!',timestampfile)
                 end
                 if O.resample_after_rec
-                    overlay_props=settable_properties(O.overlay);
+                    overlay_props=propvals(O.overlay,'set');
                     src=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
                     tstamps=O.frame_grab_s;
                     fps=O.vid_obj.FrameRate;
                     prof=O.video_profile;
-                    opts=settable_properties(O.vid_obj);
+                    opts=propvals(O.vid_obj,'set');
                     resample_video(src,tstamps,fps,prof,'progfun',@O.show_resample_prog,'vidprops',opts);
                     O.build_overlay(overlay_props); % restore overlay to values before resampling changed them
                 end

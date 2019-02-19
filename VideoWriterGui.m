@@ -166,16 +166,16 @@ function build_gui(filename,profile)
     % Make the video object, which, depending on the profile used
     % will have a number of settable properties
     vw=handles('get','videowriters',profpop.Value);
-    propnames=fieldnames(settable_properties(vw));
-    propvals=struct2cell(settable_properties(vw));
+    propnames=fieldnames(propvals(vw,'set'));
+    pv=struct2cell(settable_properties(vw));
     % add uicontrols for the settable properties
     
     for i=1:numel(propnames)
         % The property name field
         uicontrol('Parent',fig,'Style','text','String',propnames{i});
         % The corresponding value
-        if ~isempty(propvals{i})
-            valstr=num2str(propvals{i}); % num2str('asd') > 'asd'
+        if ~isempty(pv{i})
+            valstr=num2str(pv{i}); % num2str('asd') > 'asd'
         else
             valstr='[]';
         end
