@@ -1,20 +1,23 @@
- function [vid,prof]=VideoWriterGui(varargin)
+function [vid,prof]=VideoWriterGui(varargin)
     % Load the information about available profiles
-   
-     import('audiovideo.internal.writer.profile.ProfileFactory');
-     prof_info=ProfileFactory.getKnownProfiles;
-      
-     screensize=get(groot,'Screensize');
-     defpos=[screensize(3)/2 screensize(4)/2 screensize(3)/6 screensize(4)/8];
-     
+    
+    import('audiovideo.internal.writer.profile.ProfileFactory');
+    prof_info=ProfileFactory.getKnownProfiles;
+    
+    ss=get(groot,'Screensize');
+    defpos=[ss(3)/2 ss(4)/2 ss(3)/6 max(24,round(ss(4)/44))]; % not defpos(4) is height PER ROW in pixels
+    fontsize=max(8,8*defpos(4)/24);
+    
     p=inputParser;
     p.addParameter('filename',fullfile(pwd,datestr(now,'YYYYMMDD_hhmmss')),@ischar);
     p.addParameter('matlab_presets',true,@(x)any(x==[0 1]));
     p.addParameter('presets',[],@(x)isempty(x) || isstruct(x));
     p.addParameter('default_preset',1,@(x)isnumeric(x) && x>0 && round(x)==x);
     p.addParameter('position',defpos,@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
-    p.addParameter('title','Choose Video Settings',@ischar);
+    p.addParameter('title','VideoWriter Settings',@ischar);
     p.addParameter('center',true,@(x)any(x==[1 0]));
+    p.addParameter('modal',true,@(x)any(x==[1 0]));
+    p.addParameter('fontsize',fontsize,@isnumeric);
     p.parse(varargin{:});
     
     % Clear the persisten value in the handle function in case a previous
@@ -23,6 +26,10 @@
     % Set the deault return value
     handles('set','return_video',[]);
     handles('set','return_profile',[]);
+    
+    % Store the height per row and fontsize
+    handles('set','px_per_row',p.Results.position(4));
+    handles('set','fontsize',p.Results.fontsize);
     
     % make the list of available profiles to select
     if ~isempty(p.Results.presets)
@@ -46,12 +53,12 @@
     end
     
     % Create the main window
-    handles('set','fig',figure);
+    handles('set','fig',figure('Visible','off'));
     fig=handles('get','fig');
     clf(fig);
     set(fig,'Color',[0.94 0.94 0.94]);
     fig.Position=p.Results.position;
-    set(fig,'Visible','off');
+    set(fig,'Resize','off');
     set(fig,'Units','Pixels');
     set(fig,'CloseRequestFcn',@close_button_callback);
     set(fig,'ResizeFcn',[]);
@@ -59,6 +66,9 @@
     set(fig,'MenuBar','none');
     set(fig,'ToolBar','none');
     set(fig,'Name',p.Results.title);
+    if p.Results.modal
+        set(fig,'WindowStyle','modal');
+    end
     
     % Add the UIControls
     build_gui(p.Results.filename,p.Results.default_preset);
@@ -72,8 +82,6 @@
     uiwait(fig);
     vid=handles('get','return_video');
     prof=handles('get','return_profile');
-   % profpop=findobj(fig,'Tag','profpop');
-   % prof=profpop.String{profpop.Value};
     handles('clear');
  end
  
@@ -123,7 +131,6 @@
  end
  
 function build_gui(filename,profile)
-    persistent old_n_rows
     if isnumeric(profile)
         if profile<1 || profile>numel(handles('get','profiles'))
             warning('requested default profile is out of range, using top of list');
@@ -188,17 +195,15 @@ function build_gui(filename,profile)
     all_ui=findobj(fig,'Type','UIControl');
     now_n_rows=numel(all_ui)/2;
     set(all_ui,'Units','Normalized');
-    if isempty(old_n_rows)
-        old_n_rows=now_n_rows; % first time we get here
-    end
-    if now_n_rows~=old_n_rows
-        set(fig,'Units','Pixels');
-        old_fig_hei = fig.InnerPosition(4);
-        fig.InnerPosition(4)=round(old_fig_hei/old_n_rows*now_n_rows);
-        fig.Position(2)=fig.InnerPosition(2)+old_fig_hei-fig.InnerPosition(4);
-        set(fig,'Units','Normalized');
-    end
-    old_n_rows=now_n_rows;
+    % Adjust the height of the window to accomodate the number of rows
+    set(fig,'Units','Pixels');
+    %  - store old height for post rescale alignment of top
+    old_fig_hei = fig.InnerPosition(4);
+    %  - set the heightt
+    fig.InnerPosition(4)=now_n_rows*handles('get','px_per_row');
+    %  - shift the figure vertically to keep the top aligned
+    fig.Position(2)=fig.InnerPosition(2)+old_fig_hei-fig.InnerPosition(4);
+    set(fig,'Units','Normalized');
     % Set the position and size of all uicontrols
     for i=1:2:numel(all_ui)
         hei=1/now_n_rows*0.8;
@@ -206,6 +211,8 @@ function build_gui(filename,profile)
         all_ui(i).Position=[0.5125 ypos 0.475 hei];
         all_ui(i+1).Position=[0.025 ypos 0.475 hei];
     end
+    % Set the fontsize
+    set(all_ui,'FontSize',handles('get','fontsize'));
     drawnow;
 end
 function okbut_callback(~,~)
