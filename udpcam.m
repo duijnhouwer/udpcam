@@ -1,4 +1,4 @@
-classdef udpcam_class < handle
+classdef udpcam < handle
     
     properties (Access=private)
         udp_settings
@@ -23,7 +23,7 @@ classdef udpcam_class < handle
     end
     
     methods (Access=public)
-        function O=udpcam_class(varargin)
+        function O=udpcam(varargin)
             p=inputParser;
             p.addParameter('IP','127.0.0.1',@ischar);
             p.addParameter('LocalPort',4010,@(x)mod(x,1)==0 && x>=1024 && x<=49151);
@@ -521,6 +521,7 @@ classdef udpcam_class < handle
                 uiwait(errordlg(msg,mfilename,'modal'));
                 return
             end
+            O.fig_obj.Name=[ O.fig_obj.Name ' - Recording to ' O.vid_obj.Filename ];
             O.frame_grab_s=[];
             O.rec_frames=1; % flag *and* counter
             O.build_main_menu; % changed to "stop recording" only when rec_frames>0
@@ -533,6 +534,7 @@ classdef udpcam_class < handle
             O.rec_frames=0;
             pause(0.1);
             close(O.vid_obj);
+            O.fig_obj.Name(regexp(O.fig_obj.Name,' - Rec'):end)=[];
             if was_rec
                 % Remove the red border
                 O.show_frame;
