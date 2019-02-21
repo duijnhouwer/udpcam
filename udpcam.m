@@ -26,8 +26,8 @@ classdef udpcam < handle
         function O=udpcam(varargin)
             p=inputParser;
             p.addParameter('IP','127.0.0.1',@ischar);
-            p.addParameter('LocalPort',4010,@(x)mod(x,1)==0 && x>=1024 && x<=49151);
-            p.addParameter('RemotePort',4011,@isnumeric);
+            p.addParameter('LocalPort',4010,@(x)isnumeric(x) && mod(x,1)==0 && x>=1024 && x<=49151);
+            p.addParameter('RemotePort',4011,@(x)isnumeric(x) && mod(x,1)==0 && x>=1024 && x<=49151);
             p.addParameter('position',[260 500 640 480],@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
             p.addParameter('center',true,@(x)any(x==[1 0]));
             p.addParameter('bgcolor',[0.5 0.5 0.5],@(x)isnumeric(x)&&numel(x)==3&&all(x>=0&&x<=1));
@@ -38,14 +38,6 @@ classdef udpcam < handle
             O.rec_frames=0;
             O.rec_start_tic=tic;
             O.last_key_press=[];
-            
-            % Set up the UDP connection for receiving commands and sending
-            % feedback
-            O.udp_settings.Enable=true;
-            O.udp_settings.RemoteHost=p.Results.IP;
-            O.udp_settings.LocalPort=p.Results.LocalPort;
-            O.udp_settings.RemotePort=p.Results.RemotePort;
-            O.setup_udp_connection;
             
             % Set the video defaults
             O.video_profile='Archival';
@@ -90,19 +82,40 @@ classdef udpcam < handle
             
             % The cam_obj object
             if ~isempty(webcamlist)
-                O.cam_obj=webcam();
+                try
+                    O.cam_obj=webcam();
+                catch me
+                    uiwait(errordlg(me.message,mfilename,'modal'));
+                    O.clean_up;
+                    delete(O);
+                    return
+                end
             else
                 O.cam_obj=[];
             end
             
+            % Set up the UDP connection for receiving commands and sending
+            % feedback
+            O.udp_settings.Enable=true;
+            O.udp_settings.RemoteHost=p.Results.IP;
+            O.udp_settings.LocalPort=p.Results.LocalPort;
+            O.udp_settings.RemotePort=p.Results.RemotePort;
+            try
+                O.setup_udp_connection;
+            catch me
+                msg={me.message};
+                msg{end+1}='Tip: run instrreset to release all connections';
+                uiwait(errordlg(msg,mfilename,'modal'));
+                O.clean_up;
+                delete(O);
+                return
+            end
+            
             % Create the main right-click context menu
             O.build_main_menu;
-            %
             
-            %try
+            % Start the loop
             O.main_loop;
-            %catch
-            %end
             O.clean_up;
             delete(O);
         end
@@ -126,7 +139,7 @@ classdef udpcam < handle
         function close_button_callback(O,~,~)
             set(O.fig_obj, 'pointer', 'watch')
             O.exit_flag=true; % breaks the video loop and makes that uiwait is skipped after coming out of video loop
-            pause(1/3); % give plenty time to finish current cycle of the main_loop
+            pause(1/4); % give plenty time to finish current cycle of the main_loop
             %   O.clean_up;
         end
         
@@ -146,18 +159,16 @@ classdef udpcam < handle
                 delete(O.udp_obj)
                 O.udp_obj=[];
             end
-            try
-                O.udp_obj=udp(O.udp_settings.RemoteHost,'RemotePort',O.udp_settings.RemotePort,'LocalPort',O.udp_settings.LocalPort);
-                O.udp_obj.DatagramReceivedFcn = @O.parse_message;
-                fopen(O.udp_obj);
-                fprintf(O.udp_obj,'%s online',mfilename);
-            catch me
-                uiwait(errordlg(me.message,mfilename,'modal'));
-                O.clean_up;
-            end
+            O.udp_obj=udp(O.udp_settings.RemoteHost,'RemotePort',O.udp_settings.RemotePort,'LocalPort',O.udp_settings.LocalPort);
+            O.udp_obj.DatagramReceivedFcn = @O.parse_udp_message;
+            fopen(O.udp_obj);
+            O.hello_callback
         end
         
-        function parse_message(O,~,~)
+        function parse_udp_message(O,~,~)
+            % First thing, let remote control know their message was received
+            fprintf(O.udp_obj,'Roger');
+            % Parse the message
             msg=strtrim(fscanf(O.udp_obj));
             commands=cellfun(@strtrim,regexp(msg,'>','split'),'UniformOutput',false); % 'Color Space > RGB' --> {'Color Space'}    {'RGB'}
             currentmenu=O.mainMenu;
@@ -165,10 +176,10 @@ classdef udpcam < handle
                 labels={currentmenu.Children.Label};
                 match=partialMatch(commands{i},labels,'IgnoreCase',true,'FullMatchPrecedence',true);
                 if numel(match)~=1
-                    fprintf(udp_object,sprintf('Error parsing ''%s'': No partial or full match for %s',msg,commands{i}));
+                    fprintf(O.udp_obj,sprintf('No (partial) match for ''%s''',commands{i}));
                     return
                 elseif numel(match)>1
-                    fprintf(udp_object,sprintf('Error parsing ''%s'': %d matches for ''%s''',msg,numel(match),commands{i}));
+                    fprintf(O.udp_obj,sprintf('Multiple (%d) matches for ''%s''',numel(match),commands{i}));
                     return
                 end
                 currentmenu=findobj(currentmenu.Children,'flat','Label',match{1});
@@ -180,9 +191,9 @@ classdef udpcam < handle
             try
                 % Execute the associated function with the optional command
                 if numel(commands)==i
-                    feval(currentmenu.MenuSelectedFcn,currentmenu)
+                    feval(currentmenu.MenuSelectedFcn,currentmenu,'UDP');
                 elseif numel(commands)==i+1 % there is a remaining commands
-                    feval(currentmenu.MenuSelectedFcn,currentmenu,commands{i+1})
+                    feval(currentmenu.MenuSelectedFcn,currentmenu,'UDP',commands{i+1});
                 elseif numel(commands)>i+1 % there are more than 1 remaining commands
                     fprintf(O.udp_obj,sprintf('Too many commands after %s>',commands{i}));
                 end
@@ -191,14 +202,48 @@ classdef udpcam < handle
             end
         end
         
+        function list_commands_callback(O,~,source)
+            T=evalc('make_list(O.mainMenu,'''')');
+            T=regexp(T,'\n','split'); % make cell per line
+            T(end)=[]; % empty string
+            switch O.kindof(source)
+                case 'GUI'
+                    listdlg('Name','All UDP commands','PromptString','','ListString',T,'SelectionMode','single','ListSize',[250,400],'OKString','Cancel');
+                case 'UDP'
+                    fprintf(O.udp_obj,'All commands:')
+                    for i=1:numel(T)
+                        fprintf(O.udp_obj,sprintf('--- %s',T{i}))
+                    end
+            end
+            function make_list(menu,pth)
+                kids=menu.Children;
+                for c=numel(kids):-1:1
+                    pth{end+1}=kids(c).Label;
+                    if numel(kids(c).Children)>0
+                        make_list(kids(c),pth); % recursive
+                        pth(end)=[];
+                    else
+                        str=sprintf('%s > ',pth{:});
+                        str(end-2:end)=[]; % remove final ' > '
+                        fprintf('%s\n',str); % and add new line
+                        pth(end)=[];
+                    end
+                end
+            end
+        end
+        
+
+            
         function O=build_main_menu(O)
             delete(O.mainMenu);
             O.mainMenu = uicontextmenu;
             if ~O.rec_frames>0
-                uimenu('Parent',O.mainMenu,'Label','UDP...','Callback',@O.edit_udp_connection);
+                uimenu('Parent',O.mainMenu,'Label','UDP');
                 uimenu('Parent',O.mainMenu,'Label','Camera');
                 uimenu('Parent',O.mainMenu,'Label','Output');
                 uimenu('Parent',O.mainMenu,'Label','Record','Separator','on','Callback',@O.start_recording);
+                uimenu('Parent',O.mainMenu,'Label','Quit','Separator','on','Callback',@O.close_button_callback);
+                O.build_udp_menu;
                 O.build_camera_menu;
                 O.build_output_menu;
             else
@@ -208,13 +253,25 @@ classdef udpcam < handle
             O.display.UIContextMenu=O.mainMenu;
         end
         
+        function build_udp_menu(O,~,~)
+            udpmenu=findobj(O.mainMenu.Children,'flat','Label','UDP');
+            delete(udpmenu.Children);
+            uimenu('Parent',udpmenu,'Label','Settings...','Callback',@O.edit_udp_connection);
+            uimenu('Parent',udpmenu,'Label','Hello','Callback',@(src,evt)hello_callback(O,src,evt));
+            uimenu('Parent',udpmenu,'Label','List commands','Callback',@(src,evt)O.list_commands_callback(src,evt));
+        end
+        
+        function hello_callback(O,a,b)
+            fprintf(O.udp_obj,sprintf('Hi, this is %s using camera %s\n',O.fig_obj.Name,O.cam_obj.Name));
+        end
+        
         function build_camera_menu(O,~,~)
             cameraMenu=findobj(O.mainMenu.Children,'flat','Label','Camera');
             delete(cameraMenu.Children);
             selectMenu=uimenu('Parent',cameraMenu,'Label','Select');
             cams=[webcamlist 'None'];
             for i=1:numel(cams)
-                uimenu('Parent',selectMenu,'Label',cams{i},'Callback',@(src,evt)O.select_camera(src,evt));
+                uimenu('Parent',selectMenu,'Label',cams{i},'Callback',@O.select_camera);
             end
             uimenu('Parent',selectMenu,'Label','Refresh List','Callback',@O.build_camera_menu,'Separator','on');
             if ~isempty(O.cam_obj) && isvalid(O.cam_obj)
@@ -290,9 +347,9 @@ classdef udpcam < handle
             src.Checked=O.onoff(O.resample_after_rec);
         end
         
-        function edit_udp_connection(O,~,action)
+        function edit_udp_connection(O,~,source,assignstr)
             tmpset=O.udp_settings;
-            switch O.kindof(action)
+            switch O.kindof(source)
                 case 'GUI'
                     while true
                         tit='UDP Settings';
@@ -309,7 +366,7 @@ classdef udpcam < handle
                         end
                     end
                 case 'UDP'
-                    tmpset=O.parse_assignment_string(tmpset,action);
+                    tmpset=O.parse_assignment_string(tmpset,assignstr);
                     error(check_for_errors(tmpset)); % throws no error if argument is empty
             end
             % Don't check for change, make a new connection regardless
@@ -333,42 +390,9 @@ classdef udpcam < handle
             end
         end
         
-        function edit_output_filename(O,~,action,whichstr)
-            switch O.kindof(action)
-                case 'GUI'
-                    [name,folder]=uiputfile({'.mj2'},'Select video file to write',O.(whichstr).filename);
-                    if isnumeric(name)
-                        return; % user pressed cancel
-                    end
-                    O.video_settings.filename=fullfile(folder,name);
-                case 'UDP'
-                    tmpset=O.(whichstr);
-                    tmpset=O.parse_assignment_string(tmpset,action);
-                    errstr=check_for_errors(tmpset); % throws no error if argument is empty
-                    if isempty(errstr)
-                        O.(whichstr)=tmpset;
-                    else
-                        fprintf(O.udp_obj,errstr);
-                    end
-            end
-            function errstr=check_for_errors(set)
-                errstr='';
-                try
-                    fid=fopen(set.filename,'w');
-                    if fid==-1
-                        errstr=sprintf('%s\n%s %s %s',errstr,'could not open',set.filename,'for writing');
-                    else
-                        fclose(fid);
-                    end
-                catch me
-                    errstr=sprintf('%s\n%s',errstr,me.message); % e.g. 'invalid filename' if not a string
-                end
-            end
-        end
-        
-        function edit_output_settings(O,~,action)
+        function edit_output_settings(O,~,source,assignstr)
             %  tmpset=O.video_settings;
-            switch O.kindof(action)
+            switch O.kindof(source)
                 case 'GUI'
                     tmpset.profile_name=['Current (' O.video_profile ')'];
                     tmpset.profile_desc=['Current video settings based on the ' O.video_profile ' profile'];
@@ -383,7 +407,20 @@ classdef udpcam < handle
                     tmpset=propvals(O.vid_obj,'set');
                     tmpset.filename=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
                     tmpset.profile=O.video_profile;
-                    tmpset=O.parse_assignment_string(tmpset,action);
+                    if ~exist('assignstr','var')
+                        fprintf(O.udp_obj,'Assignment string required, for example:');
+                        flds=fieldnames(tmpset);
+                        vals=struct2cell(tmpset);
+                        for i=1:numel(flds)
+                            valstr=strtrim(evalc('disp(vals{i})'));
+                            if isempty(valstr)
+                                valstr='[]';
+                            end
+                            fprintf(O.udp_obj,sprintf('--- %s = %s',flds{i},valstr));
+                        end
+                        return;
+                    end               
+                    tmpset=O.parse_assignment_string(tmpset,assignstr);
                     try
                         vidtmp=VideoWriter(tmpset.filename,tmpset.profile);
                         props=fieldnames(tmpset);
@@ -415,7 +452,7 @@ classdef udpcam < handle
                 try
                     O.frame=O.cam_obj.snapshot;
                     last_size=size(O.frame);
-                catch me
+                catch
                     % cam_obj.snapshot will throw a timeout error if a settings
                     % dialog has been open. Catch that error here and set f to
                     % some noise values disp(['grab_frame - ' me.message])
@@ -534,10 +571,10 @@ classdef udpcam < handle
             O.rec_frames=0;
             pause(0.1);
             close(O.vid_obj);
-            O.fig_obj.Name(regexp(O.fig_obj.Name,' - Rec'):end)=[];
             if was_rec
-                % Remove the red border
+                % Remove the red border and "recording" from title
                 O.show_frame;
+                O.fig_obj.Name(regexp(O.fig_obj.Name,' - Rec'):end)=[];
                 % Save the timestamps in separate file (considered storing
                 % them in top-left corner pixel of each frame but would
                 % only work with no or lossless compression
@@ -615,11 +652,12 @@ classdef udpcam < handle
             O.rec_frames=0;
             pause(0.1);
             O.stop_recording;
-            if ~isempty(O.udp_obj) && isvalid(O.udp_obj)
+            if ~isempty(O.udp_obj) && isvalid(O.udp_obj) && strcmpi(O.udp_obj.Status,'open')
+                fprintf(O.udp_obj,'bye');
                 fclose(O.udp_obj);
             end
-            delete(O.udp_obj);
             delete(O.cam_obj);
+            delete(O.udp_obj);
             delete(O.fig_obj);
         end
     end
@@ -640,13 +678,13 @@ classdef udpcam < handle
             end
             settings_struct.(match{1})=eval(assignstr{2});
         end
-        function nomstr=kindof(action)
-            if isa(action,'matlab.ui.eventdata.ActionData')
+        function nomstr=kindof(source)
+            if isa(source,'matlab.ui.eventdata.ActionData')
                 nomstr=categorical({'GUI'});
-            elseif ischar(action)
+            elseif ischar(source) && strcmpi(source,'UDP')
                 nomstr=categorical({'UDP'});
             else
-                error('action should be ActionData or an assignstr');
+                error('source should be ActionData (resulting from GUI action) or the string ''UDP''');
             end
         end
         function str=onoff(bool)
