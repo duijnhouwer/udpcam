@@ -1,6 +1,6 @@
 function [scum,vars]=skim(vars,name,varargin)
     
-    % Skim names, name-value pairs, or name-(value-lists) pairs from a cell
+    % Skim names, name-value pairs, or name-valuelists pairs from a cell
     % array
     %
     % See also inputParser
