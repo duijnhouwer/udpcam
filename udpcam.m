@@ -167,7 +167,7 @@ classdef udpcam < handle
         
         function parse_udp_message(O,~,~)
             % First thing, let remote control know their message was received
-            fprintf(O.udp_obj,'Roger');
+            O.send_msg('Roger');
             % Parse the message
             msg=strtrim(fscanf(O.udp_obj));
             commands=cellfun(@strtrim,regexp(msg,'>','split'),'UniformOutput',false); % 'Color Space > RGB' --> {'Color Space'}    {'RGB'}
@@ -176,10 +176,10 @@ classdef udpcam < handle
                 labels={currentmenu.Children.Label};
                 match=partialMatch(commands{i},labels,'IgnoreCase',true,'FullMatchPrecedence',true);
                 if numel(match)~=1
-                    fprintf(O.udp_obj,sprintf('No (partial) match for ''%s''',commands{i}));
+                    O.send_err('No (partial) match for ''%s''',commands{i});
                     return
                 elseif numel(match)>1
-                    fprintf(O.udp_obj,sprintf('Multiple (%d) matches for ''%s''',numel(match),commands{i}));
+                    O.send_err('Multiple (%d) matches for ''%s''',numel(match),commands{i});
                     return
                 end
                 currentmenu=findobj(currentmenu.Children,'flat','Label',match{1});
@@ -195,10 +195,10 @@ classdef udpcam < handle
                 elseif numel(commands)==i+1 % there is a remaining commands
                     feval(currentmenu.MenuSelectedFcn,currentmenu,'UDP',commands{i+1});
                 elseif numel(commands)>i+1 % there are more than 1 remaining commands
-                    fprintf(O.udp_obj,sprintf('Too many commands after %s>',commands{i}));
+                    O.send_err('Too many commands after %s>',commands{i});
                 end
             catch me
-                fprintf(O.udp_obj,me.message);
+                O.send_err(me.message);
             end
         end
         
@@ -210,9 +210,9 @@ classdef udpcam < handle
                 case 'GUI'
                     listdlg('Name','All UDP commands','PromptString','','ListString',T,'SelectionMode','single','ListSize',[250,400],'OKString','Cancel');
                 case 'UDP'
-                    fprintf(O.udp_obj,'All commands:')
+                    O.send_msg('All commands:')
                     for i=1:numel(T)
-                        fprintf(O.udp_obj,sprintf('--- %s',T{i}))
+                        O.send_msg('--- %s',T{i});
                     end
             end
             function make_list(menu,pth)
@@ -261,8 +261,8 @@ classdef udpcam < handle
             uimenu('Parent',udpmenu,'Label','List commands','Callback',@(src,evt)O.list_commands_callback(src,evt));
         end
         
-        function hello_callback(O,a,b)
-            fprintf(O.udp_obj,sprintf('Hi, this is %s using camera %s\n',O.fig_obj.Name,O.cam_obj.Name));
+        function hello_callback(O,~,~)
+            O.send_msg('Hi, this is %s using camera %s\n',O.fig_obj.Name,O.cam_obj.Name);
         end
         
         function build_camera_menu(O,~,~)
@@ -408,7 +408,7 @@ classdef udpcam < handle
                     tmpset.filename=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
                     tmpset.profile=O.video_profile;
                     if ~exist('assignstr','var')
-                        fprintf(O.udp_obj,'Assignment string required, for example:');
+                        O.send_err('Assignment string required, for example:');
                         flds=fieldnames(tmpset);
                         vals=struct2cell(tmpset);
                         for i=1:numel(flds)
@@ -416,7 +416,7 @@ classdef udpcam < handle
                             if isempty(valstr)
                                 valstr='[]';
                             end
-                            fprintf(O.udp_obj,sprintf('--- %s = %s',flds{i},valstr));
+                            O.send_msg('--- %s = %s',flds{i},valstr);
                         end
                         return;
                     end               
@@ -434,7 +434,7 @@ classdef udpcam < handle
                             end
                         end
                     catch me
-                        fprintf(O.udp_obj,me.message);
+                        O.send_err(me.message);
                         return;
                     end
                     delete(O.vid_obj);
@@ -613,6 +613,13 @@ classdef udpcam < handle
             end
         end
         
+        function send_msg(O,str,varargin)
+            fprintf(O.udp_obj,sprintf(str,varargin{:}));
+        end
+         function send_err(O,str,varargin)
+            fprintf(O.udp_obj,sprintf(['error: ' str],varargin{:}));
+        end
+        
         function canceled_by_user=show_resample_prog(O,i,ntotal)
             persistent previous_percent
             if i==1
@@ -653,17 +660,15 @@ classdef udpcam < handle
             pause(0.1);
             O.stop_recording;
             if ~isempty(O.udp_obj) && isvalid(O.udp_obj) && strcmpi(O.udp_obj.Status,'open')
-                fprintf(O.udp_obj,'bye');
+                O.send_msg('bye');
                 fclose(O.udp_obj);
             end
             delete(O.cam_obj);
             delete(O.udp_obj);
             delete(O.fig_obj);
         end
-    end
-    
-    methods (Static)
-        function settings_struct=parse_assignment_string(settings_struct,assignstr)
+        
+        function settings_struct=parse_assignment_string(O,settings_struct,assignstr)
             % if assignstr 'someparameter = 1'
             assignstr=strtrim(strsplit(assignstr,'='));
             % now assignstr is {'someparameter'} {'1'}
@@ -672,13 +677,13 @@ classdef udpcam < handle
             end
             match=partialMatch(assignstr{1},fieldnames(settings_struct));
             if numel(match)==0
-                error('assignment field ''%s'' does not match any setting',assignstr{1});
+                O.send_err('assignment field ''%s'' does not match any setting',assignstr{1});
             elseif numel(match)>1
-                error('assignment field ''%s'' matches multiple (%d) settings',assignstr{1},numel(match));
+                O.send_err('assignment field ''%s'' matches multiple (%d) settings',assignstr{1},numel(match));
             end
             settings_struct.(match{1})=eval(assignstr{2});
         end
-        function nomstr=kindof(source)
+        function nomstr=kindof(~,source)
             if isa(source,'matlab.ui.eventdata.ActionData')
                 nomstr=categorical({'GUI'});
             elseif ischar(source) && strcmpi(source,'UDP')
@@ -686,7 +691,9 @@ classdef udpcam < handle
             else
                 error('source should be ActionData (resulting from GUI action) or the string ''UDP''');
             end
-        end
+        end 
+    end
+    methods (Static)
         function str=onoff(bool)
             if bool
                 str='on';
