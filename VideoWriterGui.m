@@ -167,7 +167,7 @@ function build_gui(filename,profile)
     % will have a number of settable properties
     vw=handles('get','videowriters',profpop.Value);
     propnames=fieldnames(propvals(vw,'set'));
-    pv=struct2cell(settable_properties(vw));
+    pv=struct2cell(propvals(vw,'set'));
     % add uicontrols for the settable properties
     
     for i=1:numel(propnames)
