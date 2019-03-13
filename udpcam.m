@@ -55,7 +55,7 @@ classdef udpcam < handle
             O.fig_obj.Units='Pixels';
             O.fig_obj.CloseRequestFcn=@O.close_button_callback;
             O.fig_obj.ResizeFcn=@O.maintain_aspect_ratio;
-            set(O.fig_obj,'pointer','watch');
+            O.fig_obj.Pointer='watch';
             O.fig_obj.NumberTitle='Off';
             O.fig_obj.MenuBar='none';
             O.fig_obj.ToolBar='none';
@@ -122,7 +122,7 @@ classdef udpcam < handle
     end
     methods (Access=private)
         function main_loop(O)
-            set(O.fig_obj, 'pointer', 'arrow');
+            O.fig_obj.Pointer='arrow';
             while ~O.exit_flag && isvalid(O.fig_obj)
                 O.grab_frame;
                 O.show_frame;
@@ -139,8 +139,8 @@ classdef udpcam < handle
         function close_button_callback(O,~,~)
             set(O.fig_obj, 'pointer', 'watch')
             O.exit_flag=true; % breaks the video loop and makes that uiwait is skipped after coming out of video loop
-            pause(1/4); % give plenty time to finish current cycle of the main_loop
-            %   O.clean_up;
+            % pause(1/4); % give plenty time to finish current cycle of the main_loop
+            % O.clean_up;
         end
         
         function key_press_callback(O,~,evt)
@@ -201,39 +201,7 @@ classdef udpcam < handle
                 O.send_err(me.message);
             end
         end
-        
-        function list_commands_callback(O,~,source)
-            T=evalc('make_list(O.mainMenu,'''')');
-            T=regexp(T,'\n','split'); % make cell per line
-            T(end)=[]; % empty string
-            switch O.kindof(source)
-                case 'GUI'
-                    listdlg('Name','All UDP commands','PromptString','','ListString',T,'SelectionMode','single','ListSize',[250,400],'OKString','Cancel');
-                case 'UDP'
-                    O.send_msg('All commands:')
-                    for i=1:numel(T)
-                        O.send_msg('--- %s',T{i});
-                    end
-            end
-            function make_list(menu,pth)
-                kids=menu.Children;
-                for c=numel(kids):-1:1
-                    pth{end+1}=kids(c).Label;
-                    if numel(kids(c).Children)>0
-                        make_list(kids(c),pth); % recursive
-                        pth(end)=[];
-                    else
-                        str=sprintf('%s > ',pth{:});
-                        str(end-2:end)=[]; % remove final ' > '
-                        fprintf('%s\n',str); % and add new line
-                        pth(end)=[];
-                    end
-                end
-            end
-        end
-        
-
-            
+               
         function O=build_main_menu(O)
             delete(O.mainMenu);
             O.mainMenu = uicontextmenu;
@@ -258,7 +226,6 @@ classdef udpcam < handle
             delete(udpmenu.Children);
             uimenu('Parent',udpmenu,'Label','Settings...','Callback',@O.edit_udp_connection);
             uimenu('Parent',udpmenu,'Label','Hello','Callback',@(src,evt)hello_callback(O,src,evt));
-            uimenu('Parent',udpmenu,'Label','List commands','Callback',@(src,evt)O.list_commands_callback(src,evt));
         end
         
         function hello_callback(O,~,~)
@@ -269,7 +236,7 @@ classdef udpcam < handle
             cameraMenu=findobj(O.mainMenu.Children,'flat','Label','Camera');
             delete(cameraMenu.Children);
             selectMenu=uimenu('Parent',cameraMenu,'Label','Select');
-            cams=[webcamlist 'None'];
+            cams=[webcamlist; 'None'];
             for i=1:numel(cams)
                 uimenu('Parent',selectMenu,'Label',cams{i},'Callback',@O.select_camera);
             end
@@ -324,6 +291,9 @@ classdef udpcam < handle
                     uimenu('Parent',colorMenu,'Label',spaces{i},'Callback',@O.select_color);
                 end
                 set(findobj(colorMenu.Children,'flat','Label',O.color_space),'Checked','on')
+                % - Add the advanced option menu
+                delete(findobj(cameraMenu.Children,'flat','Label','Advanced Settings...'));
+                uimenu('Parent',cameraMenu,'Label','Advanced Settings...','Callback',@O.edit_advanced_camera_settings);
             end
         end
         
@@ -386,6 +356,49 @@ classdef udpcam < handle
                 end
                 if ~isnumeric(set.RemotePort)
                     errstr=sprintf('%s\n%s',errstr,'port must be a number');
+                end
+            end
+        end
+        
+        function edit_advanced_camera_settings(O,~,source,assignstr)
+            oldset=propvals(O.cam_obj,'set');
+            % remove the unadvanced settings (that are covered elsewhere in the GUI)
+            oldset=rmfield(oldset,'Resolution');
+            switch O.kindof(source)
+                case 'GUI'
+                    while true
+                        label='Advanced Camera Settings';
+                        label(end+1:end+42-numel(label))=' ';
+                        [newset,pressedOk]=guisetstruct(oldset,label,20);
+                        if ~pressedOk
+                            return; % user changed their mind, no changes will be made
+                        end
+                        errstr=try_apply(newset,oldset);
+                        if ~isempty(errstr)
+                            uiwait(errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
+                        else
+                            break; % the while loop
+                        end
+                    end
+                case 'UDP'
+                    newset=O.parse_assignment_string(oldset,assignstr);
+                    error(try_apply(newset,oldset)); % throws no error if argument is empty
+            end
+            function errstr=try_apply(newset,oldset)
+                errstr='';
+                props=fieldnames(newset);
+                newvals=struct2cell(newset);
+                oldvals=struct2cell(oldset);
+                for i=1:numel(props)
+                    try
+                        O.cam_obj.(props{i})=newvals{i};
+                    catch me
+                        errstr=sprintf('%s\n%s',errstr,me.message);
+                        O.cam_obj.(props{i})=oldvals{i};
+                    end
+                end
+                if ~isempty(errstr)
+                    errstr=sprintf('%s\n\n%s','Some values left unchanged:',errstr);
                 end
             end
         end
@@ -588,6 +601,12 @@ classdef udpcam < handle
                     warning('Could not save timestamp file ''%s''!',timestampfile)
                 end
                 if O.resample_after_rec
+                    pointer=O.fig_obj.Pointer;
+                    O.fig_obj.Pointer='watch';
+                    delete(O.mainMenu);
+                    O.mainMenu = uicontextmenu;
+                    uimenu('Parent',O.mainMenu,'Label','Cancel Resampling','Callback',@O.cancel_resample_video);
+                    O.display.UIContextMenu=O.mainMenu;
                     overlay_props=propvals(O.overlay,'set');
                     src=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
                     tstamps=O.frame_grab_s;
@@ -596,9 +615,15 @@ classdef udpcam < handle
                     opts=propvals(O.vid_obj,'set');
                     resample_video(src,tstamps,fps,prof,'progfun',@O.show_resample_prog,'vidprops',opts);
                     O.build_overlay(overlay_props); % restore overlay to values before resampling changed them
+                    O.fig_obj.Pointer=pointer;
                 end
             end
             O.build_main_menu;
+        end
+        
+        function cancel_resample_video(O,~,~)
+            % simulate double escape press
+            O.last_key_press.key='escape-escape';
         end
         
         function save_frame(O)
