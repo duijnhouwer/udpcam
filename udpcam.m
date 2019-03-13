@@ -20,6 +20,9 @@ classdef udpcam < handle
         win_resize_tic % timer since last window resize
         color_space;
         resample_after_rec; % make video realtime after recording
+        flip; % flip frame up down
+        flop; % flip frame left right
+        rotate90;
     end
     
     methods (Access=public)
@@ -46,7 +49,10 @@ classdef udpcam < handle
             % access when menu is changed into "stop recording" only, too
             O.color_space = categorical({'RGB'});
             O.resample_after_rec = true;
-            
+            O.flip=false; % flip up down
+            O.flop=false; % flip left right
+            O.rotate90=false;
+        
             % Setup the window
             O.fig_obj=figure;
             O.fig_obj.Position=p.Results.position;
@@ -283,6 +289,11 @@ classdef udpcam < handle
                     uimenu('Parent',resMenu,'Label',resos{i},'Callback',@(src,evt)O.select_resolution(src,evt));
                 end
                 set(findobj(resMenu.Children,'flat','Label',O.cam_obj.Resolution),'Checked','on');
+                % - 
+                uimenu('Parent',cameraMenu,'Label','Flip Up Down','Checked',O.onoff(O.flip),'Callback',@O.toggle_flip);
+                uimenu('Parent',cameraMenu,'Label','Flop Left Right','Checked',O.onoff(O.flop),'Callback',@O.toggle_flop);
+                uimenu('Parent',cameraMenu,'Label','Rotate 90 Degrees','Checked',O.onoff(O.rotate90),'Callback',@O.toggle_rotate);
+
                 % - Add the color-space selection menu
                 spaces={'RGB','Grayscale','R','G','B'};
                 delete(findobj(cameraMenu.Children,'flat','Label','Color Space'));
@@ -315,6 +326,25 @@ classdef udpcam < handle
         function toggle_resample(O,src,~)
             O.resample_after_rec=~O.resample_after_rec;
             src.Checked=O.onoff(O.resample_after_rec);
+        end
+        
+        function toggle_flip(O,src,~)
+            O.flip=~O.flip;
+            src.Checked=O.onoff(O.flip);
+        end
+        function toggle_flop(O,src,~)
+            O.flop=~O.flop;
+            src.Checked=O.onoff(O.flop);
+        end
+        function toggle_rotate(O,src,~)
+            O.rotate90=~O.rotate90;
+            src.Checked=O.onoff(O.rotate90);
+            % change the window size
+            if ~strcmpi(O.fig_obj.WindowState,'maximized')
+                oldwid=O.fig_obj.Position(3);
+                O.fig_obj.Position(3)=O.fig_obj.Position(4);
+                O.fig_obj.Position(4)=oldwid;
+            end
         end
         
         function edit_udp_connection(O,~,source,assignstr)
@@ -487,6 +517,15 @@ classdef udpcam < handle
             else
                 error('Unknown colorspace: %s',O.color_space)
             end
+            if O.flip
+               O.frame=flipud(O.frame);
+            end
+            if O.flop
+               O.frame=fliplr(O.frame);
+            end
+            if O.rotate90
+                O.frame=rot90(O.frame);
+            end
             if O.rec_frames>0
                 O.frame_grab_s(O.rec_frames)=toc(O.rec_start_tic);
                 O.rec_frames=O.rec_frames+1;
@@ -537,25 +576,19 @@ classdef udpcam < handle
             % Reset the units
             O.axs_obj.Units=oldUnits;
             % Set a time to fit the window to the contect after some time
-            % but only if the resizing isn't to either the full screen
-            % height or width, like when expanded to the max in windows.
-            % 666 This doesn't work entirely because scaling to the max is
-            % only to where the taskbar is in windows. And I don't know how
-            % this works on Linux or Mac. But for now good enough
-            scrwidhei=get(0,'screensize');
-            scrwidhei(1:2)=[]; % remove x and y pos
-            if ~any(O.fig_obj.Position([3 4])==scrwidhei)
-                O.win_resize_tic=tic;
-            end
+            O.win_resize_tic=tic;
         end
         
         function resize_figure_to_content(O,~,~)
+            if strcmpi(O.fig_obj.WindowState,'maximized')
+                return;
+            end
             oldUnits=O.axs_obj.Units;
             O.axs_obj.Units='pixels';
             % keep on same center
             O.fig_obj.Position(1)=O.fig_obj.Position(1)+0.5*(O.fig_obj.Position(3)-O.axs_obj.Position(3));
             O.fig_obj.Position(2)=O.fig_obj.Position(2)+0.5*(O.fig_obj.Position(4)-O.axs_obj.Position(4));
-            % Make the figure window tight fitting
+            % Make the figure window tight-fitting
             O.fig_obj.Position(3)=O.axs_obj.Position(3);
             O.fig_obj.Position(4)=O.axs_obj.Position(4);
             % Reset the units
