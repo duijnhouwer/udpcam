@@ -55,8 +55,8 @@ classdef udpcam < handle
             O.flop=false; % flip left right
             O.rotation=0;
             O.crop_enable=false;
-            O.crop_box=struct('TopY',1,'LeftX',1,'Width',Inf,'Height',Inf);
-        
+            O.crop_box=[0 0 1 1];
+            
             % Setup the window
             O.fig_obj=figure;
             O.fig_obj.Position=p.Results.position;
@@ -265,7 +265,7 @@ classdef udpcam < handle
             outMenu=findobj(O.mainMenu.Children,'flat','Label','Output');
             delete(outMenu.Children);
             uimenu('Parent',outMenu,'Label','VideoWriter...','Callback',@O.edit_output_settings);
-            uimenu('Parent',outMenu,'Label','Resample','Checked',O.onoff(O.resample_after_rec),'Callback',@O.toggle_resample);
+            uimenu('Parent',outMenu,'Label','Resample','Checked',O.onoff(O.resample_after_rec),'Callback',@O.toggle_resample,'Tag','resample_video_check');
         end
         
         function select_camera(O,src,~)
@@ -299,8 +299,8 @@ classdef udpcam < handle
                 % - 
                 delete(findobj(cameraMenu.Children,'flat','Label','Mirror'));
                 mirrorMenu=uimenu('Parent',cameraMenu,'Label','Mirror');
-                uimenu('Parent',mirrorMenu,'Label','Up-Down','Checked',O.onoff(O.flip),'Callback',@O.toggle_flip);
-                uimenu('Parent',mirrorMenu,'Label','Left-Right','Checked',O.onoff(O.flop),'Callback',@O.toggle_flop);
+                uimenu('Parent',mirrorMenu,'Label','Up-Down','Checked',O.onoff(O.flip),'Callback',@O.toggle_flip,'Tag','mirror_flip_check');
+                uimenu('Parent',mirrorMenu,'Label','Left-Right','Checked',O.onoff(O.flop),'Callback',@O.toggle_flop,'Tag','mirror_flop_check');
                 delete(findobj(cameraMenu.Children,'flat','Label','Rotate'));
                  % -
                 rotateMenu=uimenu('Parent',cameraMenu,'Label','Rotate');
@@ -311,9 +311,9 @@ classdef udpcam < handle
                 set(findobj(rotateMenu.Children,'flat','Label',O.rotation),'Checked','on');
                 % -
                 cropMenu=uimenu('Parent',cameraMenu,'Label','Crop');
-                uimenu('Parent',cropMenu,'Label','Enable','Checked',O.onoff(O.crop_enable),'Callback',@O.toggle_crop);
+                uimenu('Parent',cropMenu,'Label','Enable','Checked',O.onoff(O.crop_enable),'Callback',@O.toggle_crop,'Tag','crop_box_enable_check');
                 uimenu('Parent',cropMenu,'Label','Edit box...','Callback',@O.edit_crop_box);
-                uimenu('Parent',cropMenu,'Label','Draw box...'); % 666
+                uimenu('Parent',cropMenu,'Label','Draw box...','Callback',@O.draw_crop_box)
                 % - Add the color-space selection menu
                 spaces={'RGB','Grayscale','R','G','B'};
                 delete(findobj(cameraMenu.Children,'flat','Label','Color Space'));
@@ -362,23 +362,30 @@ classdef udpcam < handle
             O.color_space=categorical({src.Text}); 
         end
         
-        function toggle_resample(O,src,~)
+        function toggle_resample(O,~,~)
+            % could use src (2nd argument) instead of using findobj but
+            % this way the toggle can be applied in code instead of just
+            % through a click on the menu item
             O.resample_after_rec=~O.resample_after_rec;
-            src.Checked=O.onoff(O.resample_after_rec);
+            obj=findobj(O.fig_obj.Children,'Tag','resample_video_check');
+            obj.Checked=O.onoff(O.resample_after_rec);
         end
         
-        function toggle_flip(O,src,~)
+        function toggle_flip(O,~,~)
             O.flip=~O.flip;
-            src.Checked=O.onoff(O.flip);
+            obj=findobj(O.fig_obj.Children,'Tag','mirror_flip_check');
+            obj.Checked=O.onoff(O.flip);
         end
-        function toggle_flop(O,src,~)
+        function toggle_flop(O,~,~)
             O.flop=~O.flop;
-            src.Checked=O.onoff(O.flop);
+            obj=findobj(O.fig_obj.Children,'Tag','mirror_flop_check');
+            obj.Checked=O.onoff(O.flop);
         end
         
-         function toggle_crop(O,src,~)
+         function toggle_crop(O,~,~)
             O.crop_enable=~O.crop_enable;
-            src.Checked=O.onoff(O.crop_enable);
+            obj=findobj(O.fig_obj.Children,'Tag','crop_box_enable_check');
+            obj.Checked=O.onoff(O.crop_enable);
          end
 
         
@@ -426,11 +433,14 @@ classdef udpcam < handle
         end
         
           function edit_crop_box(O,~,source,assignstr)
-            tmpset=O.crop_box;
+            tmpset.Middle_X=O.crop_box(1)+O.crop_box(3)/2;
+            tmpset.Middle_Y=O.crop_box(2)+O.crop_box(4)/2;
+            tmpset.Width=O.crop_box(3);
+            tmpset.Height=O.crop_box(4);
             switch O.kindof(source)
                 case 'GUI'
                     while true
-                        tit='Crop Settings (pixels)';
+                        tit='Crop Settings (Normalized)';
                         tit(end+1:end+42-numel(tit))=' ';
                         [tmpset,pressedOk]=guisetstruct(tmpset,tit,15);
                         if ~pressedOk
@@ -447,25 +457,47 @@ classdef udpcam < handle
                     tmpset=O.parse_assignment_string(tmpset,assignstr);
                     error(check_for_errors(tmpset)); % throws no error if argument is empty
             end
-            O.crop_box=tmpset;
+            O.crop_box=[tmpset.Middle_X-tmpset.Width/2 tmpset.Middle_Y-tmpset.Height/2 tmpset.Width tmpset.Height];
             %
             function errstr=check_for_errors(set)
                 errstr='';
-                if ~isnumeric(set.TopY) || set.TopY<1 || set.TopY~=round(set.TopY)
-                    errstr=sprintf('%s\n%s',errstr,'TopY must be a number and >= 1');
+                if ~isnumeric(set.Middle_X) || set.Middle_X<0 || set.Middle_X>1
+                    errstr=sprintf('%s\n%s',errstr,'Middle_X must be a number between 0 and 1');
                 end
-                if ~isnumeric(set.LeftX) || set.LeftX<1 || set.LeftX~=round(set.LeftX)
-                    errstr=sprintf('%s\n%s',errstr,'LeftX must be a number and >= 1');
+                if ~isnumeric(set.Middle_Y) || set.Middle_Y<0 || set.Middle_Y>1
+                    errstr=sprintf('%s\n%s',errstr,'Middle_Y must be a number between 0 and 1');
                 end
-                if ~isnumeric(set.Width) || set.Width<1 || set.Width~=round(set.Width)
-                    errstr=sprintf('%s\n%s',errstr,'TopX must be a number and >= 1');
+                if ~isnumeric(set.Width) || set.Width<0 || set.Width>1
+                    errstr=sprintf('%s\n%s',errstr,'Width must be a number between 0 and 1');
                 end
-                if ~isnumeric(set.Height) || set.Height<1 || set.Height~=round(set.Height)
-                    errstr=sprintf('%s\n%s',errstr,'LeftY must be a number and >= 1');
+                if ~isnumeric(set.Height) || set.Height<0 || set.Height>1
+                    errstr=sprintf('%s\n%s',errstr,'Height must be a number between 0 and 1');
                 end
             end
-        end
-        
+          end
+          
+          function draw_crop_box(O,~,~)
+              if O.crop_enable
+                  % switch to full frame, nested cropping is a little
+                  % complicated, no need to implement
+                  O.toggle_crop;
+                  O.grab_frame;
+                  O.show_frame;
+                  O.resize_figure_to_content;
+              end
+              h = images.roi.Rectangle(O.axs_obj,'Position',O.crop_box,'StripeColor','w');
+              drawnow
+              while isvalid(h)
+                  newbox=h.Position;
+                  pause(0.01)
+              end
+              delete(h);
+              O.crop_box=newbox;
+              if ~O.crop_enable
+                  O.toggle_crop;
+              end
+          end
+          
         function edit_advanced_camera_settings(O,~,source,assignstr)
             oldset=propvals(O.cam_obj,'set');
             % remove the unadvanced settings (that are covered elsewhere in the GUI)
@@ -580,12 +612,26 @@ classdef udpcam < handle
             else
                 O.frame=repmat(randi([0 255],last_size(1:2),'uint8'),1,1,3);
             end
-            if O.crop_enable
-                leftx=max(O.crop_box.LeftX,1);
-                topy=max(O.crop_box.TopY,1);
-                rightx=min(leftx+O.crop_box.Width,size(O.frame,2));
-                bottomy=min(topy+O.crop_box.Height,size(O.frame,1));
+            if O.crop_enable && ~all(O.crop_box==[0 0 1 1])
+                try
+                res=str2double(regexp(O.cam_obj.Resolution,'x','split'));
+                px=round(O.crop_box.*[res res]);
+                leftx=max(1,min(px(1),res(1)));
+                topy=max(1,min(px(2),res(2)));
+                rightx=max(1,min(px(1)+px(3),res(1)));
+                bottomy=max(1,min(px(2)+px(4),res(2)));
                 O.frame=O.frame(topy:bottomy,leftx:rightx,:);
+                catch me
+                    if strcmp(me.identifier,'MATLAB:badsubscript')
+                        % this happens when the resolution of the cam_obj
+                        % increased, res is now larger than the frame which
+                        % was grabbed before increase. will be fine next
+                        % frame (can't change during recoring so only
+                        % preview is interrupted for a frame)
+                    else
+                        rethrow(me)
+                    end
+                end
             end
             if O.color_space=='RGB' %#ok<*BDSCA>
                 O.frame=O.frame;
