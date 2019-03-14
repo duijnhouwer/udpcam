@@ -18,11 +18,13 @@ classdef udpcam < handle
         video_profile
         overlay
         win_resize_tic % timer since last window resize
-        color_space;
+        color_space
         resample_after_rec; % make video realtime after recording
-        flip; % flip frame up down
-        flop; % flip frame left right
-        rotate90;
+        flip % flip frame up down
+        flop % flip frame left right
+        rotation
+        crop_box
+        crop_enable
     end
     
     methods (Access=public)
@@ -51,7 +53,9 @@ classdef udpcam < handle
             O.resample_after_rec = true;
             O.flip=false; % flip up down
             O.flop=false; % flip left right
-            O.rotate90=false;
+            O.rotation=0;
+            O.crop_enable=false;
+            O.crop_box=struct('TopY',1,'LeftX',1,'Width',Inf,'Height',Inf);
         
             % Setup the window
             O.fig_obj=figure;
@@ -67,7 +71,10 @@ classdef udpcam < handle
             O.fig_obj.ToolBar='none';
             O.fig_obj.Name = [mfilename ' ' p.Results.IP ':' num2str(p.Results.LocalPort)];
             O.fig_obj.WindowKeyPressFcn=@O.key_press_callback;
-            
+            if verLessThan('matlab','9.4') % 2018a
+                O.fig_obj.WindowState='normal'; % indicated maximized or not, introduced with 2018a
+            end
+        
             % Create the axes where the preview will be displayed
             O.axs_obj = axes(O.fig_obj);
             O.axs_obj.Units='normalized';
@@ -290,10 +297,23 @@ classdef udpcam < handle
                 end
                 set(findobj(resMenu.Children,'flat','Label',O.cam_obj.Resolution),'Checked','on');
                 % - 
-                uimenu('Parent',cameraMenu,'Label','Flip Up Down','Checked',O.onoff(O.flip),'Callback',@O.toggle_flip);
-                uimenu('Parent',cameraMenu,'Label','Flop Left Right','Checked',O.onoff(O.flop),'Callback',@O.toggle_flop);
-                uimenu('Parent',cameraMenu,'Label','Rotate 90 Degrees','Checked',O.onoff(O.rotate90),'Callback',@O.toggle_rotate);
-
+                delete(findobj(cameraMenu.Children,'flat','Label','Mirror'));
+                mirrorMenu=uimenu('Parent',cameraMenu,'Label','Mirror');
+                uimenu('Parent',mirrorMenu,'Label','Up-Down','Checked',O.onoff(O.flip),'Callback',@O.toggle_flip);
+                uimenu('Parent',mirrorMenu,'Label','Left-Right','Checked',O.onoff(O.flop),'Callback',@O.toggle_flop);
+                delete(findobj(cameraMenu.Children,'flat','Label','Rotate'));
+                 % -
+                rotateMenu=uimenu('Parent',cameraMenu,'Label','Rotate');
+                uimenu('Parent',rotateMenu,'Label','0','Callback',@O.select_rotation);
+                uimenu('Parent',rotateMenu,'Label','90','Callback',@O.select_rotation);
+                uimenu('Parent',rotateMenu,'Label','180','Callback',@O.select_rotation);
+                uimenu('Parent',rotateMenu,'Label','270','Callback',@O.select_rotation);
+                set(findobj(rotateMenu.Children,'flat','Label',O.rotation),'Checked','on');
+                % -
+                cropMenu=uimenu('Parent',cameraMenu,'Label','Crop');
+                uimenu('Parent',cropMenu,'Label','Enable','Checked',O.onoff(O.crop_enable),'Callback',@O.toggle_crop);
+                uimenu('Parent',cropMenu,'Label','Edit box...','Callback',@O.edit_crop_box);
+                uimenu('Parent',cropMenu,'Label','Draw box...'); % 666
                 % - Add the color-space selection menu
                 spaces={'RGB','Grayscale','R','G','B'};
                 delete(findobj(cameraMenu.Children,'flat','Label','Color Space'));
@@ -317,6 +337,25 @@ classdef udpcam < handle
             end
         end
         
+        function O=select_rotation(O,src,~)
+            old_rot=O.rotation;
+            O.rotation=str2double(src.Text);
+            if O.rotation==old_rot
+                return
+            end
+            %O.grab_frame; % to flush possibly lingering frame of previous resolution
+            set(src.Parent.Children,'Checked','off');
+            src.Checked='on';
+            if mod(old_rot-O.rotation,180)
+                % change the window size if aspect ratio flipped
+                if ~strcmpi(O.fig_obj.WindowState,'maximized')
+                    oldwid=O.fig_obj.Position(3);
+                    O.fig_obj.Position(3)=O.fig_obj.Position(4);
+                    O.fig_obj.Position(4)=oldwid;
+                end
+            end
+        end
+        
         function select_color(O,src,~)
             set(src.Parent.Children,'Checked','off');
             src.Checked='on';
@@ -336,16 +375,12 @@ classdef udpcam < handle
             O.flop=~O.flop;
             src.Checked=O.onoff(O.flop);
         end
-        function toggle_rotate(O,src,~)
-            O.rotate90=~O.rotate90;
-            src.Checked=O.onoff(O.rotate90);
-            % change the window size
-            if ~strcmpi(O.fig_obj.WindowState,'maximized')
-                oldwid=O.fig_obj.Position(3);
-                O.fig_obj.Position(3)=O.fig_obj.Position(4);
-                O.fig_obj.Position(4)=oldwid;
-            end
-        end
+        
+         function toggle_crop(O,src,~)
+            O.crop_enable=~O.crop_enable;
+            src.Checked=O.onoff(O.crop_enable);
+         end
+
         
         function edit_udp_connection(O,~,source,assignstr)
             tmpset=O.udp_settings;
@@ -386,6 +421,47 @@ classdef udpcam < handle
                 end
                 if ~isnumeric(set.RemotePort)
                     errstr=sprintf('%s\n%s',errstr,'port must be a number');
+                end
+            end
+        end
+        
+          function edit_crop_box(O,~,source,assignstr)
+            tmpset=O.crop_box;
+            switch O.kindof(source)
+                case 'GUI'
+                    while true
+                        tit='Crop Settings (pixels)';
+                        tit(end+1:end+42-numel(tit))=' ';
+                        [tmpset,pressedOk]=guisetstruct(tmpset,tit,15);
+                        if ~pressedOk
+                            return; % user changed their mind, no changes will be made
+                        end
+                        errstr=check_for_errors(tmpset);
+                        if ~isempty(errstr)
+                            uiwait(errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
+                        else
+                            break; % the while loop
+                        end
+                    end
+                case 'UDP'
+                    tmpset=O.parse_assignment_string(tmpset,assignstr);
+                    error(check_for_errors(tmpset)); % throws no error if argument is empty
+            end
+            O.crop_box=tmpset;
+            %
+            function errstr=check_for_errors(set)
+                errstr='';
+                if ~isnumeric(set.TopY) || set.TopY<1 || set.TopY~=round(set.TopY)
+                    errstr=sprintf('%s\n%s',errstr,'TopY must be a number and >= 1');
+                end
+                if ~isnumeric(set.LeftX) || set.LeftX<1 || set.LeftX~=round(set.LeftX)
+                    errstr=sprintf('%s\n%s',errstr,'LeftX must be a number and >= 1');
+                end
+                if ~isnumeric(set.Width) || set.Width<1 || set.Width~=round(set.Width)
+                    errstr=sprintf('%s\n%s',errstr,'TopX must be a number and >= 1');
+                end
+                if ~isnumeric(set.Height) || set.Height<1 || set.Height~=round(set.Height)
+                    errstr=sprintf('%s\n%s',errstr,'LeftY must be a number and >= 1');
                 end
             end
         end
@@ -504,6 +580,13 @@ classdef udpcam < handle
             else
                 O.frame=repmat(randi([0 255],last_size(1:2),'uint8'),1,1,3);
             end
+            if O.crop_enable
+                leftx=max(O.crop_box.LeftX,1);
+                topy=max(O.crop_box.TopY,1);
+                rightx=min(leftx+O.crop_box.Width,size(O.frame,2));
+                bottomy=min(topy+O.crop_box.Height,size(O.frame,1));
+                O.frame=O.frame(topy:bottomy,leftx:rightx,:);
+            end
             if O.color_space=='RGB' %#ok<*BDSCA>
                 O.frame=O.frame;
             elseif O.color_space=='Grayscale'
@@ -523,8 +606,8 @@ classdef udpcam < handle
             if O.flop
                O.frame=fliplr(O.frame);
             end
-            if O.rotate90
-                O.frame=rot90(O.frame);
+            if O.rotation>0
+                O.frame=rot90(O.frame,O.rotation/90);
             end
             if O.rec_frames>0
                 O.frame_grab_s(O.rec_frames)=toc(O.rec_start_tic);
