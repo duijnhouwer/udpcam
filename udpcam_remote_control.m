@@ -16,9 +16,8 @@ classdef udpcam_remote_control < handle
     end
     methods
         function O=udpcam_remote_control
-            % see also: instrreset
             try
-            init_udp_obj(O)
+                init_udp_obj(O);
             catch me
                 disp(me.message)
                 if strcmpi(me.identifier,'instrument:fopen:opfailed')
@@ -41,7 +40,7 @@ classdef udpcam_remote_control < handle
             end
             if strcmpi(O.verbosity,'all') || ...
                     strcmpi(O.verbosity,'error') && startsWith(lower(msg),'error:')
-                fprintf('%s\n',msg);
+                fprintf('[%s] %s\n',mfilename,msg);
             end
             O.append_log('host',msg);
         end
@@ -54,12 +53,7 @@ classdef udpcam_remote_control < handle
                 O.RogerRogerTic=tic;
             end
         end
-        function append_log(O,sender,msg)
-            when={datestr(now,'YYYYMMDD_hhmmss')};
-            who={sender};
-            what={msg};
-            O.log=[O.log ; table(when,who,what)];
-        end
+        
     end
     methods (Access=private)
         function init_udp_obj(O)
@@ -70,7 +64,12 @@ classdef udpcam_remote_control < handle
             O.udp_obj.DatagramReceivedFcn = @O.disp_cam_message;
             fopen(O.udp_obj);
         end
-     
+        function append_log(O,sender,msg)
+            when={datestr(now,'YYYYMMDD_hhmmss')};
+            who={sender};
+            what={msg};
+            O.log=[O.log ; table(when,who,what)];
+        end
     end
     
     methods

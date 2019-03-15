@@ -242,7 +242,7 @@ classdef udpcam < handle
         end
         
         function hello_callback(O,~,~)
-            O.send_msg('Hi, this is %s using camera %s\n',O.fig_obj.Name,O.cam_obj.Name);
+            O.send_msg('Hello, this is %s on camera %s\n',O.fig_obj.Name,O.cam_obj.Name);
         end
         
         function build_camera_menu(O,~,~)
