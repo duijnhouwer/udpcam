@@ -1,5 +1,8 @@
 classdef udpcam < handle
     
+    % recommended to have Adam Danz' msgboxFontSize on your path for bigger fonts in dialogs
+    % https://www.mathworks.com/matlabcentral/fileexchange/68460-msgboxfontsize
+    
     properties (Access=private)
         udp_settings
         udp_obj
@@ -9,7 +12,7 @@ classdef udpcam < handle
         vid_obj
         exit_flag=false
         rec_frames=0 % Dual purpose flow-control flag AND counter for frame_grab_s array
-        mainMenu
+        main_menu
         display
         frame
         rec_start_tic
@@ -20,11 +23,12 @@ classdef udpcam < handle
         win_resize_tic % timer since last window resize
         color_space
         resample_after_rec; % make video realtime after recording
-        flip % flip frame up down
-        flop % flip frame left right
+        flip_up_down 
+        flip_left_right
         rotation
         crop_box
         crop_enable
+        open_dialog_name
     end
     
     methods (Access=public)
@@ -35,7 +39,7 @@ classdef udpcam < handle
             p.addParameter('RemotePort',4011,@(x)isnumeric(x) && mod(x,1)==0 && x>=1024 && x<=49151);
             p.addParameter('position',[260 500 640 480],@(x)isnumeric(x)&&isvector(x)&&numel(x)==4);
             p.addParameter('center',true,@(x)any(x==[1 0]));
-            p.addParameter('bgcolor',[0.5 0.5 0.5],@(x)isnumeric(x)&&numel(x)==3&&all(x>=0&&x<=1));
+            p.addParameter('bgcolor',[0.5 0.5 0.5],@(x)isnumeric(x)&&numel(x)==3&&all(x>=0&x<=1));
             p.parse(varargin{:});
             
             % Initialize the flow control flags and other parameters
@@ -50,9 +54,9 @@ classdef udpcam < handle
             % store color_space as class scope variable because we need
             % access when menu is changed into "stop recording" only, too
             O.color_space = categorical({'RGB'});
-            O.resample_after_rec = true;
-            O.flip=false; % flip up down
-            O.flop=false; % flip left right
+            O.resample_after_rec = false;
+            O.flip_up_down=false;
+            O.flip_left_right=false; % flip left right
             O.rotation=0;
             O.crop_enable=false;
             O.crop_box=[0 0 1 1];
@@ -74,7 +78,7 @@ classdef udpcam < handle
             if verLessThan('matlab','9.4') % 2018a
                 O.fig_obj.WindowState='normal'; % indicated maximized or not, introduced with 2018a
             end
-        
+            
             % Create the axes where the preview will be displayed
             O.axs_obj = axes(O.fig_obj);
             O.axs_obj.Units='normalized';
@@ -98,7 +102,11 @@ classdef udpcam < handle
                 try
                     O.cam_obj=webcam();
                 catch me
-                    uiwait(errordlg(me.message,mfilename,'modal'));
+                    msg{1}=me.message;
+                    if strcmpi(me.identifier,'MATLAB:webcam:connectionExists')
+                        msg{end+2}='Tip: run ''clear all classes'' and try again.';
+                    end
+                    uiwait(O.big_errordlg(msg,mfilename,'modal'));
                     O.clean_up;
                     delete(O);
                     return
@@ -117,8 +125,10 @@ classdef udpcam < handle
                 O.setup_udp_connection;
             catch me
                 msg={me.message};
-                msg{end+1}='Tip: run instrreset to release all connections';
-                uiwait(errordlg(msg,mfilename,'modal'));
+                if strcmpi(me.identifier,'instrument:fopen:opfailed')
+                    msg{end+2}='Tip: run ''instrreset'' to release all connections and try again.';
+                end
+                uiwait(O.big_errordlg(msg,mfilename,'modal'));
                 O.clean_up;
                 delete(O);
                 return
@@ -126,6 +136,10 @@ classdef udpcam < handle
             
             % Create the main right-click context menu
             O.build_main_menu;
+            
+            % Set open_dialog_name flag, this keeps track if a dialog is
+            % open in the gui to block remote control commands
+            O.open_dialog_name='';
             
             % Start the loop
             O.main_loop;
@@ -174,25 +188,30 @@ classdef udpcam < handle
             end
             O.udp_obj=udp(O.udp_settings.RemoteHost,'RemotePort',O.udp_settings.RemotePort,'LocalPort',O.udp_settings.LocalPort);
             O.udp_obj.DatagramReceivedFcn = @O.parse_udp_message;
+            O.udp_obj.Terminator = 13; % 13 ('\r') as opposed to default 11 ('\n').
+            O.udp_obj.InputBufferSize = 4096;
+            O.udp_obj.OutputBufferSize = 4096;
             fopen(O.udp_obj);
             O.hello_callback
         end
         
         function parse_udp_message(O,~,~)
-            % First thing, let remote control know their message was received
-            O.send_msg('Roger');
             % Parse the message
+            if ~isempty(O.open_dialog_name)
+                O.send_err(sprintf('%s can''t receive messages at this time because the %s dialog is open.',upper(O.fig_obj.Name),O.open_dialog_name));
+            	return;
+            end
             msg=strtrim(fscanf(O.udp_obj));
-            commands=cellfun(@strtrim,regexp(msg,'>','split'),'UniformOutput',false); % 'Color Space > RGB' --> {'Color Space'}    {'RGB'}
-            currentmenu=O.mainMenu;
+            commands=cellfun(@strtrim,regexp(msg,'>','split'),'UniformOutput',false); % e.g. 'Color Space > RGB' --> {'Color Space'}    {'RGB'}
+            currentmenu=O.main_menu;
             for i=1:numel(commands)
                 labels={currentmenu.Children.Label};
                 match=partialMatch(commands{i},labels,'IgnoreCase',true,'FullMatchPrecedence',true);
                 if numel(match)~=1
-                    O.send_err('No (partial) match for ''%s''',commands{i});
+                    O.send_err(sprintf('No (partial) match for ''%s''',commands{i}));
                     return
                 elseif numel(match)>1
-                    O.send_err('Multiple (%d) matches for ''%s''',numel(match),commands{i});
+                    O.send_err(sprintf('Multiple (%d) matches for ''%s''',numel(match),commands{i}));
                     return
                 end
                 currentmenu=findobj(currentmenu.Children,'flat','Label',match{1});
@@ -205,50 +224,54 @@ classdef udpcam < handle
                 % Execute the associated function with the optional command
                 if numel(commands)==i
                     feval(currentmenu.MenuSelectedFcn,currentmenu,'UDP');
-                elseif numel(commands)==i+1 % there is a remaining commands
+                elseif numel(commands)==i+1 % there is one remaining commands
                     feval(currentmenu.MenuSelectedFcn,currentmenu,'UDP',commands{i+1});
                 elseif numel(commands)>i+1 % there are more than 1 remaining commands
-                    O.send_err('Too many commands after %s>',commands{i});
+                    O.send_err(sprintf('Too many commands after %s>',commands{i}));
                 end
             catch me
                 O.send_err(me.message);
             end
         end
-               
+        
         function O=build_main_menu(O)
-            delete(O.mainMenu);
-            O.mainMenu = uicontextmenu;
+            delete(O.main_menu);
+            O.main_menu = uicontextmenu;
             if ~O.rec_frames>0
-                uimenu('Parent',O.mainMenu,'Label','UDP');
-                uimenu('Parent',O.mainMenu,'Label','Camera');
-                uimenu('Parent',O.mainMenu,'Label','Output');
-                uimenu('Parent',O.mainMenu,'Label','Record','Separator','on','Callback',@O.start_recording);
-                uimenu('Parent',O.mainMenu,'Label','Quit','Separator','on','Callback',@O.close_button_callback);
+                uimenu('Parent',O.main_menu,'Label','UDP');
+                uimenu('Parent',O.main_menu,'Label','Camera');
+                uimenu('Parent',O.main_menu,'Label','Output');
+                uimenu('Parent',O.main_menu,'Label','Record','Separator','on','Callback',@O.start_recording);
+                uimenu('Parent',O.main_menu,'Label','Quit','Separator','on','Callback',@O.close_button_callback);
                 O.build_udp_menu;
                 O.build_camera_menu;
                 O.build_output_menu;
             else
-                uimenu('Parent',O.mainMenu,'Label','Stop Recording','Callback',@O.stop_recording);
+                uimenu('Parent',O.main_menu,'Label','Stop Recording','Callback',@O.stop_recording);
             end
             % Attach the menu to the display
-            O.display.UIContextMenu=O.mainMenu;
+            O.display.UIContextMenu=O.main_menu;
         end
         
         function build_udp_menu(O,~,~)
-            udpmenu=findobj(O.mainMenu.Children,'flat','Label','UDP');
-            delete(udpmenu.Children);
-            uimenu('Parent',udpmenu,'Label','Settings...','Callback',@O.edit_udp_connection);
-            uimenu('Parent',udpmenu,'Label','Hello','Callback',@(src,evt)hello_callback(O,src,evt));
+            udp_menu=findobj(O.main_menu.Children,'flat','Label','UDP');
+            delete(udp_menu.Children);
+            uimenu('Parent',udp_menu,'Label','Settings...','Callback',@O.edit_udp_connection);
+            uimenu('Parent',udp_menu,'Label','Hello','Callback',@(src,evt)hello_callback(O,src,evt));
+             
+            
+            uimenu('Parent',udp_menu,'Label','List commands','Callback',@(src,evt)O.list_commands_callback(src,evt));
+             
         end
         
         function hello_callback(O,~,~)
-            O.send_msg('Hello, this is %s on camera %s\n',O.fig_obj.Name,O.cam_obj.Name);
+              O.send_msg(sprintf('Hello! This is %s on camera %s!',upper(O.fig_obj.Name),O.cam_obj.Name));
         end
         
         function build_camera_menu(O,~,~)
-            cameraMenu=findobj(O.mainMenu.Children,'flat','Label','Camera');
-            delete(cameraMenu.Children);
-            selectMenu=uimenu('Parent',cameraMenu,'Label','Select');
+            cam_menu=findobj(O.main_menu.Children,'flat','Label','Camera');
+            delete(cam_menu.Children);
+            selectMenu=uimenu('Parent',cam_menu,'Label','Select');
             cams=[webcamlist; 'None'];
             for i=1:numel(cams)
                 uimenu('Parent',selectMenu,'Label',cams{i},'Callback',@O.select_camera);
@@ -262,69 +285,69 @@ classdef udpcam < handle
         end
         
         function build_output_menu(O,~,~)
-            outMenu=findobj(O.mainMenu.Children,'flat','Label','Output');
+            outMenu=findobj(O.main_menu.Children,'flat','Label','Output');
             delete(outMenu.Children);
             uimenu('Parent',outMenu,'Label','VideoWriter...','Callback',@O.edit_output_settings);
             uimenu('Parent',outMenu,'Label','Resample','Checked',O.onoff(O.resample_after_rec),'Callback',@O.toggle_resample,'Tag','resample_video_check');
         end
         
         function select_camera(O,src,~)
-            cameraName=src.Text;
+            cam_name=src.Text;
             set(src.Parent.Children,'Checked','off');
             src.Checked='on';
             delete(O.cam_obj);
-            if strcmpi(cameraName,'None')
+            if strcmpi(cam_name,'None')
                 O.build_camera_menu;
             else
                 % select the cam_obj
                 try
-                    O.cam_obj=webcam(cameraName);
+                    O.cam_obj=webcam(cam_name);
                 catch me
                     disp(['select_camera - ' me.message]);
                     return
                 end
                 % Add dynamic menus to cam_obj menu (depending on
                 % availability of a cam_obj and its make and model)
-                cameraMenu=findobj(O.mainMenu.Children,'flat','Label','Camera');
+                cam_menu=findobj(O.main_menu.Children,'flat','Label','Camera');
                 % - Add the Resolution menu
                 resos=O.cam_obj.AvailableResolutions;
                 [~,idx]=sort(cellfun(@(x)prod(cellfun(@str2double,regexp(x,'x','split'))),resos),'descend'); % order resos by ...
                 resos=resos(idx);                                                                         % ... number of pixels
-                delete(findobj(cameraMenu.Children,'flat','Label','Resolution'));
-                resMenu=uimenu('Parent',cameraMenu,'Label','Resolution');
+                delete(findobj(cam_menu.Children,'flat','Label','Resolution'));
+                resMenu=uimenu('Parent',cam_menu,'Label','Resolution');
                 for i=1:numel(resos)
                     uimenu('Parent',resMenu,'Label',resos{i},'Callback',@(src,evt)O.select_resolution(src,evt));
                 end
                 set(findobj(resMenu.Children,'flat','Label',O.cam_obj.Resolution),'Checked','on');
-                % - 
-                delete(findobj(cameraMenu.Children,'flat','Label','Mirror'));
-                mirrorMenu=uimenu('Parent',cameraMenu,'Label','Mirror');
-                uimenu('Parent',mirrorMenu,'Label','Up-Down','Checked',O.onoff(O.flip),'Callback',@O.toggle_flip,'Tag','mirror_flip_check');
-                uimenu('Parent',mirrorMenu,'Label','Left-Right','Checked',O.onoff(O.flop),'Callback',@O.toggle_flop,'Tag','mirror_flop_check');
-                delete(findobj(cameraMenu.Children,'flat','Label','Rotate'));
-                 % -
-                rotateMenu=uimenu('Parent',cameraMenu,'Label','Rotate');
-                uimenu('Parent',rotateMenu,'Label','0','Callback',@O.select_rotation);
-                uimenu('Parent',rotateMenu,'Label','90','Callback',@O.select_rotation);
-                uimenu('Parent',rotateMenu,'Label','180','Callback',@O.select_rotation);
-                uimenu('Parent',rotateMenu,'Label','270','Callback',@O.select_rotation);
-                set(findobj(rotateMenu.Children,'flat','Label',O.rotation),'Checked','on');
                 % -
-                cropMenu=uimenu('Parent',cameraMenu,'Label','Crop');
-                uimenu('Parent',cropMenu,'Label','Enable','Checked',O.onoff(O.crop_enable),'Callback',@O.toggle_crop,'Tag','crop_box_enable_check');
-                uimenu('Parent',cropMenu,'Label','Edit box...','Callback',@O.edit_crop_box);
-                uimenu('Parent',cropMenu,'Label','Draw box...','Callback',@O.draw_crop_box)
+                delete(findobj(cam_menu.Children,'flat','Label','Mirror'));
+                mirrorMenu=uimenu('Parent',cam_menu,'Label','Mirror');
+                uimenu('Parent',mirrorMenu,'Label','Up-Down','Checked',O.onoff(O.flip_up_down),'Callback',@O.toggle_flip_up_down,'Tag','mirror_up_down_check');
+                uimenu('Parent',mirrorMenu,'Label','Left-Right','Checked',O.onoff(O.flip_left_right),'Callback',@O.toggle_flip_left_right,'Tag','mirror_left_right_check');
+                delete(findobj(cam_menu.Children,'flat','Label','Rotate'));
+                % -
+                rotate_menu=uimenu('Parent',cam_menu,'Label','Rotate');
+                uimenu('Parent',rotate_menu,'Label','0','Callback',@O.select_rotation);
+                uimenu('Parent',rotate_menu,'Label','90','Callback',@O.select_rotation);
+                uimenu('Parent',rotate_menu,'Label','180','Callback',@O.select_rotation);
+                uimenu('Parent',rotate_menu,'Label','270','Callback',@O.select_rotation);
+                set(findobj(rotate_menu.Children,'flat','Label',O.rotation),'Checked','on');
+                % -
+                crop_menu=uimenu('Parent',cam_menu,'Label','Crop');
+                uimenu('Parent',crop_menu,'Label','Enable','Checked',O.onoff(O.crop_enable),'Callback',@O.toggle_crop,'Tag','crop_box_enable_check');
+                uimenu('Parent',crop_menu,'Label','Edit box...','Callback',@O.edit_crop_box);
+                uimenu('Parent',crop_menu,'Label','Draw box...','Callback',@O.draw_crop_box)
                 % - Add the color-space selection menu
                 spaces={'RGB','Grayscale','R','G','B'};
-                delete(findobj(cameraMenu.Children,'flat','Label','Color Space'));
-                colorMenu=uimenu('Parent',cameraMenu,'Label','Color Space');
+                delete(findobj(cam_menu.Children,'flat','Label','Color Space'));
+                color_menu=uimenu('Parent',cam_menu,'Label','Color Space');
                 for i=1:numel(spaces)
-                    uimenu('Parent',colorMenu,'Label',spaces{i},'Callback',@O.select_color);
+                    uimenu('Parent',color_menu,'Label',spaces{i},'Callback',@O.select_color);
                 end
-                set(findobj(colorMenu.Children,'flat','Label',O.color_space),'Checked','on')
+                set(findobj(color_menu.Children,'flat','Label',O.color_space),'Checked','on')
                 % - Add the advanced option menu
-                delete(findobj(cameraMenu.Children,'flat','Label','Advanced Settings...'));
-                uimenu('Parent',cameraMenu,'Label','Advanced Settings...','Callback',@O.edit_advanced_camera_settings);
+                delete(findobj(cam_menu.Children,'flat','Label','Advanced Settings...'));
+                uimenu('Parent',cam_menu,'Label','Advanced Settings...','Callback',@O.edit_advanced_camera_settings);
             end
         end
         
@@ -359,7 +382,7 @@ classdef udpcam < handle
         function select_color(O,src,~)
             set(src.Parent.Children,'Checked','off');
             src.Checked='on';
-            O.color_space=categorical({src.Text}); 
+            O.color_space=categorical({src.Text});
         end
         
         function toggle_resample(O,~,~)
@@ -371,38 +394,41 @@ classdef udpcam < handle
             obj.Checked=O.onoff(O.resample_after_rec);
         end
         
-        function toggle_flip(O,~,~)
-            O.flip=~O.flip;
-            obj=findobj(O.fig_obj.Children,'Tag','mirror_flip_check');
-            obj.Checked=O.onoff(O.flip);
+        function toggle_flip_up_down(O,~,~)
+            O.flip_up_down=~O.flip_up_down;
+            obj=findobj(O.fig_obj.Children,'Tag','mirror_up_down_check');
+            obj.Checked=O.onoff(O.flip_up_down);
         end
-        function toggle_flop(O,~,~)
-            O.flop=~O.flop;
-            obj=findobj(O.fig_obj.Children,'Tag','mirror_flop_check');
-            obj.Checked=O.onoff(O.flop);
+        function toggle_flip_left_right(O,~,~)
+            O.flip_left_right=~O.flip_left_right;
+            obj=findobj(O.fig_obj.Children,'Tag','mirror_left_right_check');
+            obj.Checked=O.onoff(O.flip_left_right);
         end
         
-         function toggle_crop(O,~,~)
+        function toggle_crop(O,~,~)
             O.crop_enable=~O.crop_enable;
             obj=findobj(O.fig_obj.Children,'Tag','crop_box_enable_check');
             obj.Checked=O.onoff(O.crop_enable);
-         end
-
+        end
+        
         
         function edit_udp_connection(O,~,source,assignstr)
+            % assignstr e.g. 'enable=1'
             tmpset=O.udp_settings;
-            switch O.kindof(source)
+            switch O.gui_or_udp(source)
                 case 'GUI'
                     while true
                         tit='UDP Settings';
                         tit(end+1:end+42-numel(tit))=' ';
+                        O.open_dialog_name='UDP Settings';
                         [tmpset,pressedOk]=guisetstruct(tmpset,tit,8);
+                        O.open_dialog_name='';
                         if ~pressedOk
                             return; % user changed their mind, no changes will be made
                         end
                         errstr=check_for_errors(tmpset);
                         if ~isempty(errstr)
-                            uiwait(errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
+                            uiwait(O.big_errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
                         else
                             break; % the while loop
                         end
@@ -432,12 +458,12 @@ classdef udpcam < handle
             end
         end
         
-          function edit_crop_box(O,~,source,assignstr)
+        function edit_crop_box(O,~,source,assignstr)
             tmpset.Middle_X=O.crop_box(1)+O.crop_box(3)/2;
             tmpset.Middle_Y=O.crop_box(2)+O.crop_box(4)/2;
             tmpset.Width=O.crop_box(3);
             tmpset.Height=O.crop_box(4);
-            switch O.kindof(source)
+            switch O.gui_or_udp(source)
                 case 'GUI'
                     while true
                         tit='Crop Settings (Normalized)';
@@ -448,7 +474,7 @@ classdef udpcam < handle
                         end
                         errstr=check_for_errors(tmpset);
                         if ~isempty(errstr)
-                            uiwait(errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
+                            uiwait(O.big_errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
                         else
                             break; % the while loop
                         end
@@ -474,46 +500,48 @@ classdef udpcam < handle
                     errstr=sprintf('%s\n%s',errstr,'Height must be a number between 0 and 1');
                 end
             end
-          end
-          
-          function draw_crop_box(O,~,~)
-              if O.crop_enable
-                  % switch to full frame, nested cropping is a little
-                  % complicated, no need to implement
-                  O.toggle_crop;
-                  O.grab_frame;
-                  O.show_frame;
-                  O.resize_figure_to_content;
-              end
-              h = images.roi.Rectangle(O.axs_obj,'Position',O.crop_box,'StripeColor','w');
-              drawnow
-              while isvalid(h)
-                  newbox=h.Position;
-                  pause(0.01)
-              end
-              delete(h);
-              O.crop_box=newbox;
-              if ~O.crop_enable
-                  O.toggle_crop;
-              end
-          end
-          
+        end
+        
+        function draw_crop_box(O,~,~)
+            if O.crop_enable
+                % switch to full frame, nested cropping is a little
+                % complicated, no need to implement
+                O.toggle_crop;
+                O.grab_frame;
+                O.show_frame;
+                O.resize_figure_to_content;
+            end
+            h = images.roi.Rectangle(O.axs_obj,'Position',O.crop_box,'StripeColor','w');
+            drawnow
+            while isvalid(h)
+                newbox=h.Position;
+                pause(0.01)
+            end
+            delete(h);
+            O.crop_box=newbox;
+            if ~O.crop_enable
+                O.toggle_crop;
+            end
+        end
+        
         function edit_advanced_camera_settings(O,~,source,assignstr)
             oldset=propvals(O.cam_obj,'set');
             % remove the unadvanced settings (that are covered elsewhere in the GUI)
             oldset=rmfield(oldset,'Resolution');
-            switch O.kindof(source)
+            switch O.gui_or_udp(source)
                 case 'GUI'
                     while true
                         label='Advanced Camera Settings';
-                        label(end+1:end+42-numel(label))=' ';
+                        O.open_dialog_name=label;
+                        label(end+1:end+42-numel(label))=' '; % add space to stretch window
                         [newset,pressedOk]=guisetstruct(oldset,label,20);
+                        O.open_dialog_name='';
                         if ~pressedOk
                             return; % user changed their mind, no changes will be made
                         end
                         errstr=try_apply(newset,oldset);
                         if ~isempty(errstr)
-                            uiwait(errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
+                            uiwait(O.big_errordlg(strsplit(errstr,'\n'),mfilename,'modal'));
                         else
                             break; % the while loop
                         end
@@ -542,14 +570,15 @@ classdef udpcam < handle
         end
         
         function edit_output_settings(O,~,source,assignstr)
-            %  tmpset=O.video_settings;
-            switch O.kindof(source)
+            switch O.gui_or_udp(source)
                 case 'GUI'
                     tmpset.profile_name=['Current (' O.video_profile ')'];
                     tmpset.profile_desc=['Current video settings based on the ' O.video_profile ' profile'];
                     tmpset.VideoWriter=O.vid_obj;
+                    O.open_dialog_name='VideoWriterGui';
                     [vidtmp,proftmp]=VideoWriterGui('filename',fullfile(O.vid_obj.Path,O.vid_obj.Filename),'preset',tmpset);
-                    if ~isempty(vidtmp)
+                    O.open_dialog_name='';
+                    if ~isempty(vidtmp) % empty if user pressed cancel
                         O.vid_obj=vidtmp;
                         O.video_profile=proftmp;
                         return;
@@ -558,19 +587,27 @@ classdef udpcam < handle
                     tmpset=propvals(O.vid_obj,'set');
                     tmpset.filename=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
                     tmpset.profile=O.video_profile;
-                    if ~exist('assignstr','var')
-                        O.send_err('Assignment string required, for example:');
+                    if ~exist('assignstr','var') || isempty(assignstr)
                         flds=fieldnames(tmpset);
                         vals=struct2cell(tmpset);
+                        msg=sprintf('Assignment string required, for example:\n');
                         for i=1:numel(flds)
-                            valstr=strtrim(evalc('disp(vals{i})'));
-                            if isempty(valstr)
-                                valstr='[]';
+                           	if isnumeric(vals{i}) || islogical(vals{i})
+                                if ~isempty(vals{i})
+                                    valstr=num2str(vals{i});
+                                else
+                                    valstr='[]';
+                                end
+                            elseif ischar(vals{i}) || isstring(vals{i})
+                                valstr=sprintf('"%s"',vals{i});
+                            else
+                                valstr=['unsupported datatype: ' class(vals{i})];
                             end
-                            O.send_msg('--- %s = %s',flds{i},valstr);
+                            msg=sprintf('%s\t%s = %s\n',msg,flds{i},valstr);
                         end
+                        O.send_err(msg);
                         return;
-                    end               
+                    end
                     tmpset=O.parse_assignment_string(tmpset,assignstr);
                     try
                         vidtmp=VideoWriter(tmpset.filename,tmpset.profile);
@@ -614,13 +651,13 @@ classdef udpcam < handle
             end
             if O.crop_enable && ~all(O.crop_box==[0 0 1 1])
                 try
-                res=str2double(regexp(O.cam_obj.Resolution,'x','split'));
-                px=round(O.crop_box.*[res res]);
-                leftx=max(1,min(px(1),res(1)));
-                topy=max(1,min(px(2),res(2)));
-                rightx=max(1,min(px(1)+px(3),res(1)));
-                bottomy=max(1,min(px(2)+px(4),res(2)));
-                O.frame=O.frame(topy:bottomy,leftx:rightx,:);
+                    res=str2double(regexp(O.cam_obj.Resolution,'x','split'));
+                    px=round(O.crop_box.*[res res]);
+                    leftx=max(1,min(px(1),res(1)));
+                    topy=max(1,min(px(2),res(2)));
+                    rightx=max(1,min(px(1)+px(3),res(1)));
+                    bottomy=max(1,min(px(2)+px(4),res(2)));
+                    O.frame=O.frame(topy:bottomy,leftx:rightx,:);
                 catch me
                     if strcmp(me.identifier,'MATLAB:badsubscript')
                         % this happens when the resolution of the cam_obj
@@ -646,11 +683,11 @@ classdef udpcam < handle
             else
                 error('Unknown colorspace: %s',O.color_space)
             end
-            if O.flip
-               O.frame=flipud(O.frame);
+            if O.flip_up_down
+                O.frame=flipud(O.frame);
             end
-            if O.flop
-               O.frame=fliplr(O.frame);
+            if O.flip_left_right
+                O.frame=fliplr(O.frame);
             end
             if O.rotation>0
                 O.frame=rot90(O.frame,O.rotation/90);
@@ -670,7 +707,7 @@ classdef udpcam < handle
                 % Adjust aspect ratio of axs_obj so frame isn't stretched
                 O.maintain_aspect_ratio;
                 % Re-attach the menu to the display
-                O.display.UIContextMenu=O.mainMenu;
+                O.display.UIContextMenu=O.main_menu;
                 O.display.Parent.Visible='off';
                 % Restore the overlay
                 O.build_overlay(overlay_props);
@@ -730,7 +767,7 @@ classdef udpcam < handle
             catch me
                 msg={sprintf('Could not open %s for saving video',O.vid_obj.Filename)};
                 msg{end+1}=me.message;
-                uiwait(errordlg(msg,mfilename,'modal'));
+                uiwait(O.big_errordlg(msg,mfilename,'modal'));
                 return
             end
             O.fig_obj.Name=[ O.fig_obj.Name ' - Recording to ' O.vid_obj.Filename ];
@@ -750,9 +787,9 @@ classdef udpcam < handle
                 % Remove the red border and "recording" from title
                 O.show_frame;
                 O.fig_obj.Name(regexp(O.fig_obj.Name,' - Rec'):end)=[];
-                % Save the timestamps in separate file (considered storing
-                % them in top-left corner pixel of each frame but would
-                % only work with no or lossless compression
+                % Save the timestamps in separate file (I considered
+                % storing them coded in the top-left corner pixel of each
+                % frame but would only work with no or lossless compression
                 [~,fname]=fileparts(O.vid_obj.Filename); % remove the extension
                 timestampfile=fullfile(O.vid_obj.Path,[fname '_timestamps.txt']);
                 fid = fopen(timestampfile,'wt'); % Write Text mode lest \n doesn't work in Windows
@@ -765,10 +802,10 @@ classdef udpcam < handle
                 if O.resample_after_rec
                     pointer=O.fig_obj.Pointer;
                     O.fig_obj.Pointer='watch';
-                    delete(O.mainMenu);
-                    O.mainMenu = uicontextmenu;
-                    uimenu('Parent',O.mainMenu,'Label','Cancel Resampling','Callback',@O.cancel_resample_video);
-                    O.display.UIContextMenu=O.mainMenu;
+                    delete(O.main_menu);
+                    O.main_menu = uicontextmenu;
+                    uimenu('Parent',O.main_menu,'Label','Cancel Resampling','Callback',@O.cancel_resample_video);
+                    O.display.UIContextMenu=O.main_menu;
                     overlay_props=propvals(O.overlay,'set');
                     src=fullfile(O.vid_obj.Path,O.vid_obj.Filename);
                     tstamps=O.frame_grab_s;
@@ -795,16 +832,46 @@ classdef udpcam < handle
                 O.stop_recording;
                 msg={sprintf('Error writing to video')};
                 msg{end+1}=me.message;
-                uiwait(errordlg(msg,mfilename,'modal'));
+                uiwait(O.big_errordlg(msg,mfilename,'modal'));
                 return
             end
         end
         
-        function send_msg(O,str,varargin)
-            fprintf(O.udp_obj,sprintf(str,varargin{:}));
+        function send_msg(O,str)
+            if O.udp_obj.Terminator~=13
+                error('Terminator must be 13 (\r)');
+            end
+            str=strip(str); % remove final new line if there is one (shouldnt be one because we add one here, but it's ok, no error needed)
+            str(str==O.udp_obj.Terminator)=11; % replace any \r with \n, \r is reserved as the message Terminator character
+           % str=strrep(str,'\','\\'); % replace \ with \\ (prints as \)
+            % If the message is longer than the output buffer, broadcast
+            % in chunks. As of writing I don't expect this to ever happen.
+            n_chunks=ceil(numel(str)/(O.udp_obj.OutputBufferSize-1));
+            if n_chunks>1
+                for i=1:n_chunks-1
+                    fprintf(O.udp_obj,sprintf('<Part %d/%d>\r',i,n_chunks),'sync');
+                    pause(0.5);
+                    fprintf(O.udp_obj,'%s\r',str(1:O.udp_obj.OutputBufferSize-1),'sync');
+                    pause(0.5);
+                    str(1:O.udp_obj.OutputBufferSize-1)='';
+                end
+                fprintf(O.udp_obj,sprintf('<Part %d/%d>\r',i,n_chunks),'sync'); % final part
+                pause(0.5);
+            end
+            % Print the remainder of str
+            fprintf(O.udp_obj,'%s\r',str,'sync');
+            pause(0.5);
         end
-         function send_err(O,str,varargin)
-            fprintf(O.udp_obj,sprintf(['error: ' str],varargin{:}));
+        
+        function send_err(O,str)
+            % str=sprintf('Error: %s',str) ***NOT*** str=['Error: ' str];
+            % because that can''t deal with backspaces in the name, it will
+            % make the sprintf with send_msg interpreted that as an escape
+            % sequence which will give incorrect results or errors
+            % depending on the escape sequence used, e.g. anything with
+            % C:\Users in it will crash on the \U. But not like this:
+            str=sprintf('Error: %s',str);
+            O.send_msg(str);
         end
         
         function canceled_by_user=show_resample_prog(O,i,ntotal)
@@ -815,10 +882,10 @@ classdef udpcam < handle
             now_percent=ceil(i/ntotal*100);
             if i==1 || i==ntotal || now_percent>=previous_percent+1
                 percent_str=sprintf('%d%%\n',now_percent);
-                O.overlay.String={'Resampling video...',percent_str};
+                O.overlay.String={'Resampling video...',percent_str,'(Cancel in context menu)'};
                 previous_percent=now_percent;
             end
-            canceled_by_user=~isempty(O.last_key_press) && strcmp(O.last_key_press.key,'escape-escape');   
+            canceled_by_user=~isempty(O.last_key_press) && strcmp(O.last_key_press.key,'escape-escape');
         end
         
         function build_overlay(O,restore_struct)
@@ -847,30 +914,31 @@ classdef udpcam < handle
             pause(0.1);
             O.stop_recording;
             if ~isempty(O.udp_obj) && isvalid(O.udp_obj) && strcmpi(O.udp_obj.Status,'open')
-                O.send_msg('bye');
+                O.send_msg(sprintf('%s on camera %s is closing down. Good-bye.',upper(O.fig_obj.Name),O.cam_obj.Name));
                 fclose(O.udp_obj);
             end
             delete(O.cam_obj);
             delete(O.udp_obj);
+            clf(O.fig_obj);
             delete(O.fig_obj);
         end
         
         function settings_struct=parse_assignment_string(O,settings_struct,assignstr)
             % if assignstr 'someparameter = 1'
-            assignstr=strtrim(strsplit(assignstr,'='));
+            assign_split_cell=strtrim(strsplit(assignstr,'='));
             % now assignstr is {'someparameter'} {'1'}
-            if numel(assignstr)~=2
+            if numel(assign_split_cell)~=2
                 error('invalid assignment string: %s',assignstr);
             end
-            match=partialMatch(assignstr{1},fieldnames(settings_struct));
+            match=partialMatch(assign_split_cell{1},fieldnames(settings_struct),'IgnoreCase',true);
             if numel(match)==0
-                O.send_err('assignment field ''%s'' does not match any setting',assignstr{1});
+                O.send_err(sprintf('assignment field ''%s'' does not match any setting',assign_split_cell{1}));
             elseif numel(match)>1
-                O.send_err('assignment field ''%s'' matches multiple (%d) settings',assignstr{1},numel(match));
+                O.send_err(sprintf('assignment field ''%s'' matches multiple (%d) settings',assign_split_cell{1},numel(match)));
             end
-            settings_struct.(match{1})=eval(assignstr{2});
+            settings_struct.(match{1})=eval(assign_split_cell{2});
         end
-        function nomstr=kindof(~,source)
+        function nomstr=gui_or_udp(~,source)
             if isa(source,'matlab.ui.eventdata.ActionData')
                 nomstr=categorical({'GUI'});
             elseif ischar(source) && strcmpi(source,'UDP')
@@ -878,7 +946,42 @@ classdef udpcam < handle
             else
                 error('source should be ActionData (resulting from GUI action) or the string ''UDP''');
             end
-        end 
+        end
+        
+        function list_commands_callback(O,~,source)
+            T=evalc('make_list(O.main_menu,'''')');
+            T=regexp(T,'\n','split'); % make cell per line
+            T(end)=[]; % remove that final empty string
+            switch O.gui_or_udp(source)
+                case 'GUI'
+                    listdlg('Name','All UDP commands','PromptString','','ListString',T,'SelectionMode','single','ListSize',[250,400],'OKString','Cancel');
+                case 'UDP'
+                    msg='All commands:';
+                    for i=1:numel(T)
+                        msg=sprintf('%s\n\tobj.send(''%s'')',msg,T{i});
+                    end
+                     O.send_msg(msg);
+            end
+            function make_list(menu,pth)
+                % walk through the menu tree and make a list
+                % TODO: include the settable parameters in the setting
+                % panel like 
+                kids=menu.Children;
+                for c=numel(kids):-1:1
+                    pth{end+1}=kids(c).Label; %#ok<AGROW>
+                    if numel(kids(c).Children)>0
+                        make_list(kids(c),pth); % recursive
+                        pth(end)=[];
+                    else
+                        str=sprintf('%s > ',pth{:});
+                        str(end-2:end)=[]; % remove final ' > '
+                        fprintf('%s\n',str); % and add new line
+                        pth(end)=[];
+                    end
+                end
+            end
+        end
+        
     end
     methods (Static)
         function str=onoff(bool)
@@ -888,9 +991,25 @@ classdef udpcam < handle
                 str='off';
             end
         end
+        function efig=big_errordlg(varargin)
+            efig=errordlg(varargin{:});
+            if exist('msgboxFontSize','file')
+                s=settings;
+                msgboxFontSize(efig, s.matlab.fonts.editor.codefont.Size.ActiveValue);
+            else
+                warning([mfilename ':no_msgboxFontSize'],'msgboxFontSize is not on your path. Download it here to increase the size of fonts in udpcam dialogs.\nhttps://www.mathworks.com/matlabcentral/fileexchange/68460-msgboxfontsize');
+                warning('off',[mfilename ':no_msgboxFontSize']);
+            end
+        end
+        function O=clear_all_classes_and_instrreset
+            % convenience function that resets ALL instruments and clears
+            % ALL classes. Note that this includes objects that may have
+            % nothing to do with udpcam.
+            instrreset;
+            clear all classes;
+        end
     end
 end
-
 
 
 
