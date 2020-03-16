@@ -13,7 +13,8 @@ function s = propvals(obj,opt)
     %   identical to properties(OBJ).
     %
     %   If there are no (matching) properties in obj, S will be an empty
-    %   array [].
+    %   array []. (An empty struct would have been more consistent but
+    %   Mathworks Inc has decreed that empty structs are not empty.)
     %
     %   Example:
     %       v = VideoWriter('test.mp4','MPEG-4')
@@ -22,7 +23,7 @@ function s = propvals(obj,opt)
     %
     %   See also: properties, fieldnames
     
-    %   Duijnhouwer 2019-2-18
+    %   Duijnhouwer 2019-02-18
     
     narginchk(1,2)
     props=properties(obj);
