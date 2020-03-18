@@ -993,12 +993,16 @@ classdef udpcam < handle
         end
         function efig=big_errordlg(varargin)
             efig=errordlg(varargin{:});
-            if exist('msgboxFontSize','file')
+            try
                 s=settings;
                 msgboxFontSize(efig, s.matlab.fonts.editor.codefont.Size.ActiveValue);
-            else
-                warning([mfilename ':no_msgboxFontSize'],'msgboxFontSize is not on your path. Download it here to increase the size of fonts in udpcam dialogs.\nhttps://www.mathworks.com/matlabcentral/fileexchange/68460-msgboxfontsize');
-                warning('off',[mfilename ':no_msgboxFontSize']);
+            catch me
+                if strcmpi(me.identifier,'MATLAB:UndefinedFunction')
+                    warning([mfilename ':no_msgboxFontSize'],'Adam Danz''s msgboxFontSize is not on your path. Download it here to increase the size of fonts in udpcam dialogs.\nhttps://www.mathworks.com/matlabcentral/fileexchange/68460-msgboxfontsize');
+                    warning('off',[mfilename ':no_msgboxFontSize']);
+                else
+                    rethrow(me);
+                end
             end
         end
         function O=clear_all_classes_and_instrreset
